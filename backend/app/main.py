@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.router import api_router
@@ -32,12 +32,12 @@ def create_app() -> FastAPI:
     def health() -> dict[str, str]:
         return {"status": "ok", "service": settings.app_name}
 
-    @app.get("/", tags=["ui"])
-    def root() -> FileResponse | dict[str, str]:
+    @app.get("/", tags=["ui"], response_model=None)
+    def root() -> Response:
         index_file = static_dir / "index.html"
         if index_file.exists():
             return FileResponse(index_file)
-        return {"status": "ok", "service": settings.app_name}
+        return JSONResponse({"status": "ok", "service": settings.app_name})
 
     @app.on_event("startup")
     def _startup() -> None:
