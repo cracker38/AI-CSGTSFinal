@@ -1,0 +1,36 @@
+import axios from "axios";
+import { getAuth, clearAuth } from "../auth/authStore";
+
+const envBase = import.meta.env.VITE_API_BASE;
+// In dev, prefer same-origin /api/v1 when VITE_API_BASE is unset (uses Vite proxy to uvicorn).
+export const api = axios.create({
+  baseURL:
+    envBase && String(envBase).trim().length > 0
+      ? String(envBase).replace(/\/$/, "")
+      : import.meta.env.DEV
+        ? "/api/v1"
+        : "http://localhost:8010/api/v1",
+  // Without a timeout, a dead proxy/backend leaves login stuck on "Signing in..." forever.
+  timeout: 30_000
+});
+
+api.interceptors.request.use((config) => {
+  const url = typeof config.url === "string" ? config.url : "";
+  const isAuthLogin = url.includes("/auth/login") || url.endsWith("login");
+  const auth = getAuth();
+  if (auth?.access_token && !isAuthLogin) {
+    config.headers.Authorization = `Bearer ${auth.access_token}`;
+  }
+  return config;
+});
+
+api.interceptors.response.use(
+  (r) => r,
+  (err) => {
+    if (err?.response?.status === 401) {
+      clearAuth();
+    }
+    return Promise.reject(err);
+  }
+);
+

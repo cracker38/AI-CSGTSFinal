@@ -1,0 +1,1740 @@
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import {
+  Alert,
+  Box,
+  Button,
+  Card,
+  CardContent,
+  CircularProgress,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+  Divider,
+  FormControl,
+  Grid,
+  InputLabel,
+  MenuItem,
+  Select,
+  Snackbar,
+  Stack,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
+  TextField,
+  Typography
+} from "@mui/material";
+import { Bar, BarChart, CartesianGrid, Legend, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import CloudUploadIcon from "@mui/icons-material/CloudUpload";
+import { useSearchParams } from "react-router-dom";
+import AppShell from "../components/AppShell";
+import { api } from "../api/client";
+import { exportElementToPdfLazy } from "../utils/pdfExportLazy";
+import { getChartTheme } from "../utils/chartTheme";
+import { exportRowsToCsv } from "../utils/csvExport";
+import { useThemeMode } from "../theme/ThemeModeContext";
+import { getApiErrorMessage } from "../utils/apiError";
+
+const SECTIONS = [
+  { key: "home", label: "HR overview" },
+  { key: "masterdata", label: "Master data control" },
+  { key: "gaps", label: "Org skill gaps" },
+  { key: "training", label: "Training planning & budget" },
+  { key: "compliance", label: "Certification & compliance" },
+  { key: "recruitment", label: "Recruitment insights" },
+  { key: "pipeline", label: "Talent pipeline" },
+  { key: "cv", label: "CV validation & skill verification" },
+  { key: "performance", label: "Performance review support" },
+  { key: "records", label: "Employee records" }
+];
+
+const HR_SECTION_KEYS = new Set(SECTIONS.map((s) => s.key));
+
+export default function HrDashboard() {
+  const exportRef = useRef(null);
+  const trainingMaterialFileRef = useRef(null);
+  const [searchParams, setSearchParams] = useSearchParams();
+  // URL is the source of truth for the active tab (avoids useEffect loops between searchParams and state).
+  const activeSection = useMemo(() => {
+    const s = searchParams.get("section");
+    if (s && HR_SECTION_KEYS.has(s)) return s;
+    return "home";
+  }, [searchParams]);
+  const [loading, setLoading] = useState(true);
+  const [pending, setPending] = useState([]);
+  const [records, setRecords] = useState([]);
+  const [managers, setManagers] = useState([]);
+  const [managerAssignments, setManagerAssignments] = useState({});
+  const [kpis, setKpis] = useState(null);
+  const [skills, setSkills] = useState([]);
+  const [topGaps, setTopGaps] = useState([]);
+  const [gapTable, setGapTable] = useState([]);
+  const [gapSeverity, setGapSeverity] = useState({ HIGH: 0, MEDIUM: 0, LOW: 0 });
+  const [deptGaps, setDeptGaps] = useState([]);
+  const [cvValidation, setCvValidation] = useState([]);
+  const [trainingPlan, setTrainingPlan] = useState({ budget: { total: 0, used: 0, remaining: 0 }, programs: [], roi_estimate: 0 });
+  const [complianceData, setComplianceData] = useState({ rows: [], alerts: { expiring_soon: 0, missing: 0 } });
+  const [recruitmentData, setRecruitmentData] = useState({ missing_skills: [], hiring_suggestions: [] });
+  const [pipelineData, setPipelineData] = useState({ rows: [] });
+  const [performanceData, setPerformanceData] = useState({ rows: [] });
+  const [hrOverview, setHrOverview] = useState(null);
+  const [recentHrActions, setRecentHrActions] = useState([]);
+  const [masterCatalog, setMasterCatalog] = useState({ departments: [], job_titles: [], primary_skills: [] });
+  const [masterCatalogAdmin, setMasterCatalogAdmin] = useState({ departments: [], job_titles: [], primary_skills: [] });
+  const [catalogRequests, setCatalogRequests] = useState([]);
+  const [newDepartment, setNewDepartment] = useState("");
+  const [newJobTitle, setNewJobTitle] = useState("");
+  const [newPrimarySkill, setNewPrimarySkill] = useState("");
+  const [error, setError] = useState("");
+  const [search, setSearch] = useState("");
+  const [snackbar, setSnackbar] = useState({ open: false, message: "" });
+  const [cvDialog, setCvDialog] = useState(null);
+  const [cvNote, setCvNote] = useState("");
+  const [trainingDialog, setTrainingDialog] = useState(null);
+  const [trainingUserId, setTrainingUserId] = useState("");
+  const [trainingNote, setTrainingNote] = useState("");
+  const [trainingMaterialsEdit, setTrainingMaterialsEdit] = useState(null);
+  const [complianceDialog, setComplianceDialog] = useState(null);
+  const [complianceUntil, setComplianceUntil] = useState("");
+  const [complianceNote, setComplianceNote] = useState("");
+  const [promotionDialog, setPromotionDialog] = useState(null);
+  const [promotionNote, setPromotionNote] = useState("");
+  const [hrOpenTrainings, setHrOpenTrainings] = useState([]);
+  const [hrTrainPct, setHrTrainPct] = useState({});
+  const { mode } = useThemeMode();
+  const { colors, tooltipStyle } = getChartTheme(mode);
+
+  async function load() {
+    setLoading(true);
+    setError("");
+    try {
+      const pRes = await api.get("/admin/users/pending");
+      setPending(pRes.data);
+      const rRes = await api.get("/admin/users/records");
+      setRecords(rRes.data || []);
+      const mRes = await api.get("/admin/users/managers");
+      setManagers(mRes.data || []);
+      const initialAssignments = {};
+      (rRes.data || []).forEach((u) => {
+        initialAssignments[u.id] = u.manager_id ? String(u.manager_id) : "";
+      });
+      setManagerAssignments(initialAssignments);
+      const sRes = await api.get("/analytics/org/skills/distribution");
+      setSkills(sRes.data?.top_skills || []);
+      const gRes = await api.get("/analytics/hr/skill-gaps");
+      setGapTable(gRes.data?.rows || []);
+      setGapSeverity(gRes.data?.severity_breakdown || { HIGH: 0, MEDIUM: 0, LOW: 0 });
+      setTopGaps((gRes.data?.rows || []).slice(0, 20).map((r) => ({ skill: r.skill, total_gap: r.gap })));
+      const dRes = await api.get("/analytics/hr/skill-gaps/by-department");
+      setDeptGaps(dRes.data?.rows || []);
+      const oRes = await api.get("/analytics/org/kpis");
+      setKpis(oRes.data);
+      const cvRes = await api.get("/analytics/hr/cv-validation");
+      setCvValidation(cvRes.data?.rows || []);
+      const trRes = await api.get("/analytics/hr/training-planning");
+      setTrainingPlan(trRes.data || { budget: { total: 0, used: 0, remaining: 0 }, programs: [], roi_estimate: 0 });
+      const trainOpenRes = await api.get("/analytics/hr/training-assignments");
+      setHrOpenTrainings(trainOpenRes.data || []);
+      const cRes = await api.get("/analytics/hr/compliance");
+      setComplianceData(cRes.data || { rows: [], alerts: { expiring_soon: 0, missing: 0 } });
+      const recRes = await api.get("/analytics/hr/recruitment-insights");
+      setRecruitmentData(recRes.data || { missing_skills: [], hiring_suggestions: [] });
+      const pRes2 = await api.get("/analytics/hr/talent-pipeline");
+      setPipelineData(pRes2.data || { rows: [] });
+      const perfRes = await api.get("/analytics/hr/performance-support");
+      setPerformanceData(perfRes.data || { rows: [] });
+      const ovRes = await api.get("/analytics/hr/overview");
+      setHrOverview(ovRes.data || null);
+      const actRes = await api.get("/analytics/hr/actions/recent");
+      setRecentHrActions(actRes.data || []);
+      const catalogRes = await api.get("/master-data/catalog");
+      setMasterCatalog(catalogRes.data || { departments: [], job_titles: [], primary_skills: [] });
+      const catalogAdminRes = await api.get("/master-data/catalog-admin");
+      setMasterCatalogAdmin(catalogAdminRes.data || { departments: [], job_titles: [], primary_skills: [] });
+      const requestsRes = await api.get("/master-data/requests");
+      setCatalogRequests(requestsRes.data || []);
+    } catch (err) {
+      setError(getApiErrorMessage(err, "Failed to load HR view"));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  // Normalize missing or invalid ?section= so the URL always matches a known tab (replace only).
+  useEffect(() => {
+    const s = searchParams.get("section");
+    if (!s || !HR_SECTION_KEYS.has(s)) {
+      setSearchParams({ section: "home" }, { replace: true });
+    }
+  }, [searchParams, setSearchParams]);
+
+  async function approve(userId) {
+    setError("");
+    try {
+      await api.post(`/admin/users/${userId}/approve`);
+      await load();
+    } catch (err) {
+      setError(getApiErrorMessage(err, "Approval failed"));
+    }
+  }
+
+  async function assignManager(userId) {
+    setError("");
+    try {
+      const managerId = managerAssignments[userId] || null;
+      await api.post(`/admin/users/${userId}/assign-manager`, { manager_id: managerId || null });
+      toastOk("Manager assignment updated.");
+      await load();
+    } catch (err) {
+      setError(getApiErrorMessage(err, "Failed to assign manager"));
+    }
+  }
+
+  const activeEmployees = useMemo(
+    () => records.filter((r) => r.role === "employee" && r.status === "active"),
+    [records]
+  );
+
+  function toastOk(message) {
+    setSnackbar({ open: true, message });
+  }
+
+  async function submitCvDecision() {
+    if (!cvDialog) return;
+    setError("");
+    try {
+      await api.post("/analytics/hr/actions/cv-validation", {
+        user_id: cvDialog.userId,
+        decision: cvDialog.decision,
+        note: cvNote.trim() || null
+      });
+      setCvDialog(null);
+      setCvNote("");
+      toastOk(cvDialog.decision === "approve" ? "Primary skill approved." : "Mismatch recorded (rejected).");
+      await load();
+    } catch (err) {
+      setError(getApiErrorMessage(err, "CV decision failed"));
+    }
+  }
+
+  async function hrUpdateTrainingAssignment(actionId, body) {
+    setError("");
+    try {
+      await api.patch(`/analytics/hr/training-assignments/${actionId}`, body);
+      toastOk("Training assignment updated.");
+      await load();
+    } catch (err) {
+      setError(getApiErrorMessage(err, "Training update failed"));
+    }
+  }
+
+  async function uploadTrainingCourseMaterial() {
+    if (!trainingMaterialsEdit) return;
+    const file = trainingMaterialFileRef.current?.files?.[0];
+    if (!file) {
+      setError("Choose a PDF or video file to upload.");
+      return;
+    }
+    setError("");
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      await api.post(`/analytics/hr/training-assignments/${trainingMaterialsEdit.id}/course-material`, fd);
+      if (trainingMaterialFileRef.current) trainingMaterialFileRef.current.value = "";
+      setTrainingMaterialsEdit(null);
+      toastOk("Course material uploaded (PDF or video).");
+      await load();
+    } catch (err) {
+      setError(getApiErrorMessage(err, "Upload failed (only PDF, MP4, WebM, MOV; max 80 MB)."));
+    }
+  }
+
+  async function hrDownloadCourseMaterial(actionId, filename) {
+    setError("");
+    try {
+      const res = await api.get(`/analytics/hr/training-assignments/${actionId}/course-material`, {
+        responseType: "blob"
+      });
+      const url = URL.createObjectURL(res.data);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename || "course-material";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setError(getApiErrorMessage(err, "Download failed"));
+    }
+  }
+
+  async function submitTrainingAssign() {
+    if (!trainingDialog || !trainingUserId) return;
+    setError("");
+    const programName = trainingDialog.program_name;
+    const targetSkill = trainingDialog.target_skill;
+    const userId = trainingUserId;
+    const emp = activeEmployees.find((u) => String(u.id) === String(userId));
+    try {
+      const res = await api.post("/analytics/hr/actions/training-assign", {
+        user_id: userId,
+        program_name: programName,
+        target_skill: targetSkill,
+        estimated_cost: trainingDialog.cost ?? null,
+        note: trainingNote.trim() || null
+      });
+      const newId = res.data?.id;
+      setTrainingDialog(null);
+      setTrainingUserId("");
+      setTrainingNote("");
+      toastOk("Assignment saved. Upload the course PDF or video next.");
+      await load();
+      if (newId) {
+        setTrainingMaterialsEdit({
+          id: String(newId),
+          label: `${emp?.full_name || "Employee"} — ${programName}`,
+          filename: "",
+          kind: ""
+        });
+      }
+    } catch (err) {
+      setError(getApiErrorMessage(err, "Training assignment failed"));
+    }
+  }
+
+  async function submitComplianceRenewal() {
+    if (!complianceDialog) return;
+    setError("");
+    try {
+      await api.post("/analytics/hr/actions/compliance-renewal", {
+        user_id: complianceDialog.userId,
+        certification: complianceDialog.certification,
+        renewed_until: complianceUntil.trim() ? complianceUntil.trim() : null,
+        note: complianceNote.trim() || null
+      });
+      setComplianceDialog(null);
+      setComplianceUntil("");
+      setComplianceNote("");
+      toastOk("Compliance renewal recorded.");
+      await load();
+    } catch (err) {
+      setError(getApiErrorMessage(err, "Compliance update failed"));
+    }
+  }
+
+  async function submitPromotionRecommend() {
+    if (!promotionDialog) return;
+    setError("");
+    try {
+      await api.post("/analytics/hr/actions/promotion-recommend", {
+        user_id: promotionDialog.userId,
+        readiness_score: promotionDialog.readiness_score ?? null,
+        note: promotionNote.trim() || null
+      });
+      setPromotionDialog(null);
+      setPromotionNote("");
+      toastOk("Promotion recommendation recorded.");
+      await load();
+    } catch (err) {
+      setError(getApiErrorMessage(err, "Could not save recommendation"));
+    }
+  }
+
+  async function addDepartment() {
+    if (!newDepartment.trim()) return;
+    setError("");
+    try {
+      await api.post("/master-data/departments", { name: newDepartment.trim(), active: true });
+      setNewDepartment("");
+      toastOk("Department added.");
+      await load();
+    } catch (err) {
+      setError(getApiErrorMessage(err, "Could not add department"));
+    }
+  }
+
+  async function addJobTitle() {
+    if (!newJobTitle.trim()) return;
+    setError("");
+    try {
+      await api.post("/master-data/job-titles", { name: newJobTitle.trim(), active: true });
+      setNewJobTitle("");
+      toastOk("Job title added.");
+      await load();
+    } catch (err) {
+      setError(getApiErrorMessage(err, "Could not add job title"));
+    }
+  }
+
+  async function reviewRequest(requestId, statusValue) {
+    setError("");
+    try {
+      await api.post(`/master-data/requests/${requestId}/review`, { status: statusValue });
+      toastOk(`Request ${statusValue}.`);
+      await load();
+    } catch (err) {
+      setError(getApiErrorMessage(err, "Could not update request"));
+    }
+  }
+
+  async function addPrimarySkill() {
+    if (!newPrimarySkill.trim()) return;
+    setError("");
+    try {
+      await api.post("/master-data/skills", { name: newPrimarySkill.trim(), active: true });
+      setNewPrimarySkill("");
+      toastOk("Primary skill added.");
+      await load();
+    } catch (err) {
+      setError(getApiErrorMessage(err, "Could not add primary skill"));
+    }
+  }
+
+  async function renameCatalogItem(type, id, currentName, active = true) {
+    const nextName = window.prompt(`Update ${type} name`, currentName);
+    if (!nextName || !nextName.trim() || nextName.trim() === currentName) return;
+    setError("");
+    try {
+      await api.patch(`/master-data/${type}/${id}`, { name: nextName.trim(), active });
+      toastOk(`${type} updated.`);
+      await load();
+    } catch (err) {
+      setError(getApiErrorMessage(err, `Could not update ${type}`));
+    }
+  }
+
+  async function toggleCatalogActive(type, row) {
+    setError("");
+    try {
+      await api.patch(`/master-data/${type}/${row.id}`, { name: row.name, active: !row.active });
+      toastOk(`${type} ${row.active ? "deactivated" : "activated"}.`);
+      await load();
+    } catch (err) {
+      setError(getApiErrorMessage(err, `Could not update ${type} status`));
+    }
+  }
+
+  async function deleteCatalogItem(type, id) {
+    if (!window.confirm(`Delete this ${type}?`)) return;
+    setError("");
+    try {
+      await api.delete(`/master-data/${type}/${id}`);
+      toastOk(`${type} deleted.`);
+      await load();
+    } catch (err) {
+      setError(getApiErrorMessage(err, `Could not delete ${type}`));
+    }
+  }
+
+  const headerKpis = useMemo(
+    () => [
+      { label: "Total employees", value: records.filter((r) => r.role === "employee").length },
+      { label: "Departments", value: new Set(records.filter((r) => r.role === "employee").map((r) => r.department)).size },
+      { label: "Pending approvals", value: pending.length },
+      { label: "Open org gaps", value: topGaps.length }
+    ],
+    [records, pending.length, topGaps.length]
+  );
+
+  const filteredRecords = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return records;
+    return records.filter(
+      (r) =>
+        r.full_name.toLowerCase().includes(q) ||
+        r.email.toLowerCase().includes(q) ||
+        r.department.toLowerCase().includes(q) ||
+        r.job_title.toLowerCase().includes(q)
+    );
+  }, [records, search]);
+
+  const filteredTopGaps = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return q ? topGaps.filter((g) => g.skill.toLowerCase().includes(q)) : topGaps;
+  }, [topGaps, search]);
+
+  const filteredGapTable = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return gapTable;
+    return gapTable.filter((r) => String(r.skill).toLowerCase().includes(q));
+  }, [gapTable, search]);
+
+  const severityChartData = useMemo(
+    () => [
+      { name: "High", value: gapSeverity.HIGH || 0 },
+      { name: "Medium", value: gapSeverity.MEDIUM || 0 },
+      { name: "Low", value: gapSeverity.LOW || 0 }
+    ],
+    [gapSeverity]
+  );
+
+  const trainingBudget = trainingPlan?.budget || { total: 0, used: 0, remaining: 0 };
+
+  const overviewMetrics = useMemo(() => {
+    const employees = records.filter((r) => r.role === "employee");
+    const departments = new Set(employees.map((r) => r.department)).size;
+    const activeProjects = 0; // Project module not implemented yet in this build.
+    const gapsCount = topGaps.length;
+    const gapTotal = topGaps.reduce((acc, g) => acc + (Number(g.total_gap) || 0), 0);
+    const skillHealthScore = Math.max(0, Math.min(100, Math.round(100 - gapTotal * 1.5)));
+    const trainingInProgress =
+      hrOverview?.training_in_progress != null
+        ? Number(hrOverview.training_in_progress)
+        : Math.max(0, Math.round((trainingBudget.used || 0) / 180));
+    const certificationsExpiringSoon = complianceData?.alerts?.expiring_soon || 0;
+    return {
+      totalEmployees: employees.length,
+      departments,
+      activeProjects,
+      skillHealthScore,
+      gapsCount,
+      trainingInProgress,
+      certificationsExpiringSoon
+    };
+  }, [records, topGaps, trainingBudget, complianceData, hrOverview]);
+
+  const recruitmentInsights = useMemo(() => {
+    const employeeCount = (kpis?.users_by_role?.employee ?? 0) || records.filter((r) => r.role === "employee").length;
+    const openDemand = recruitmentData?.missing_skills || [];
+    return {
+      employeeCount,
+      openDemand,
+      hiringPriority: openDemand.map((g) => g.skill)
+    };
+  }, [kpis, records, recruitmentData]);
+
+  return (
+    <AppShell title="HR Dashboard">
+      <Stack spacing={2}>
+        {error ? <Alert severity="error">{error}</Alert> : null}
+
+        <Grid container spacing={2}>
+          {headerKpis.map((k) => (
+            <Grid item xs={12} sm={6} md={3} key={k.label}>
+              <Card variant="outlined">
+                <CardContent>
+                  <Typography variant="body2" color="text.secondary">
+                    {k.label}
+                  </Typography>
+                  <Typography variant="h4" fontWeight={900}>
+                    {k.value}
+                  </Typography>
+                </CardContent>
+              </Card>
+            </Grid>
+          ))}
+        </Grid>
+
+        <Grid container spacing={2}>
+          <Grid item xs={12}>
+            <Stack direction="row" justifyContent="flex-end" sx={{ mb: 1 }}>
+              <Button
+                variant="outlined"
+                onClick={() =>
+                  exportElementToPdfLazy(exportRef.current, `hr-${activeSection}.pdf`, {
+                    role: "hr_admin",
+                    section: activeSection,
+                    title: "HR Dashboard Report"
+                  })
+                }
+              >
+                Export PDF
+              </Button>
+            </Stack>
+            <div ref={exportRef}>
+            {loading ? (
+              <Card variant="outlined">
+                <CardContent>
+                  <Stack direction="row" spacing={2} alignItems="center">
+                    <CircularProgress size={22} />
+                    <Typography>Loading HR analytics...</Typography>
+                  </Stack>
+                </CardContent>
+              </Card>
+            ) : null}
+
+            {!loading && activeSection === "home" ? (
+              <Card variant="outlined">
+                <CardContent>
+                  <Typography variant="h6" fontWeight={800}>
+                    Home (HR overview)
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    Quick snapshot of current workforce status across the organization.
+                  </Typography>
+                  <Divider sx={{ my: 2 }} />
+
+                  <Grid container spacing={2} sx={{ mb: 1 }}>
+                    <Grid item xs={12} sm={6} md={3}>
+                      <Card variant="outlined">
+                        <CardContent>
+                          <Typography variant="body2" color="text.secondary">
+                            Total employees
+                          </Typography>
+                          <Typography variant="h4" fontWeight={900}>
+                            {overviewMetrics.totalEmployees}
+                          </Typography>
+                        </CardContent>
+                      </Card>
+                    </Grid>
+                    <Grid item xs={12} sm={6} md={3}>
+                      <Card variant="outlined">
+                        <CardContent>
+                          <Typography variant="body2" color="text.secondary">
+                            Departments
+                          </Typography>
+                          <Typography variant="h4" fontWeight={900}>
+                            {overviewMetrics.departments}
+                          </Typography>
+                        </CardContent>
+                      </Card>
+                    </Grid>
+                    <Grid item xs={12} sm={6} md={3}>
+                      <Card variant="outlined">
+                        <CardContent>
+                          <Typography variant="body2" color="text.secondary">
+                            Active projects
+                          </Typography>
+                          <Typography variant="h4" fontWeight={900}>
+                            {overviewMetrics.activeProjects}
+                          </Typography>
+                          <Typography variant="caption" color="text.secondary">
+                            Pending project module integration
+                          </Typography>
+                        </CardContent>
+                      </Card>
+                    </Grid>
+                    <Grid item xs={12} sm={6} md={3}>
+                      <Card variant="outlined">
+                        <CardContent>
+                          <Typography variant="body2" color="text.secondary">
+                            Skill health score
+                          </Typography>
+                          <Typography variant="h4" fontWeight={900}>
+                            {overviewMetrics.skillHealthScore}
+                          </Typography>
+                        </CardContent>
+                      </Card>
+                    </Grid>
+                  </Grid>
+
+                  <Grid container spacing={2}>
+                    <Grid item xs={12} md={4}>
+                      <Alert severity="warning">Number of skill gaps: {overviewMetrics.gapsCount}</Alert>
+                    </Grid>
+                    <Grid item xs={12} md={4}>
+                      <Alert severity="info">Training in progress: {overviewMetrics.trainingInProgress}</Alert>
+                    </Grid>
+                    <Grid item xs={12} md={4}>
+                      <Alert severity="error">Certifications expiring soon: {overviewMetrics.certificationsExpiringSoon}</Alert>
+                    </Grid>
+                  </Grid>
+
+                  <Divider sx={{ my: 2 }} />
+                  <Grid container spacing={2}>
+                    <Grid item xs={12} md={6}>
+                      <Typography variant="subtitle1" fontWeight={800} sx={{ mb: 1 }}>
+                        Skill distribution
+                      </Typography>
+                      <Box sx={{ width: "100%", height: 260 }}>
+                        <ResponsiveContainer>
+                          <BarChart data={skills.slice(0, 12)}>
+                            <CartesianGrid stroke={colors.grid} strokeDasharray="3 3" />
+                            <XAxis dataKey="skill" hide />
+                            <YAxis />
+                            <Tooltip contentStyle={tooltipStyle} />
+                            <Legend />
+                            <Bar dataKey="count" fill={colors.primary} name="Employees" />
+                          </BarChart>
+                        </ResponsiveContainer>
+                      </Box>
+                    </Grid>
+                    <Grid item xs={12} md={3}>
+                      <Typography variant="subtitle1" fontWeight={800} sx={{ mb: 1 }}>
+                        Gap severity
+                      </Typography>
+                      <Box sx={{ width: "100%", height: 260 }}>
+                        <ResponsiveContainer>
+                          <PieChart>
+                            <Pie data={severityChartData} dataKey="value" nameKey="name" outerRadius={90} label />
+                            <Tooltip contentStyle={tooltipStyle} />
+                          </PieChart>
+                        </ResponsiveContainer>
+                      </Box>
+                    </Grid>
+                    <Grid item xs={12} md={3}>
+                      <Typography variant="subtitle1" fontWeight={800} sx={{ mb: 1 }}>
+                        Department comparison
+                      </Typography>
+                      <Box sx={{ width: "100%", height: 260 }}>
+                        <ResponsiveContainer>
+                          <BarChart data={deptGaps.slice(0, 10)} layout="vertical">
+                            <CartesianGrid stroke={colors.grid} strokeDasharray="3 3" />
+                            <XAxis type="number" />
+                            <YAxis type="category" dataKey="department" width={90} />
+                            <Tooltip contentStyle={tooltipStyle} />
+                            <Bar dataKey="gap_score" fill={colors.warning} name="Gap score" />
+                          </BarChart>
+                        </ResponsiveContainer>
+                      </Box>
+                    </Grid>
+                  </Grid>
+
+                  <Divider sx={{ my: 2 }} />
+                  <Typography variant="subtitle1" fontWeight={800} sx={{ mb: 1 }}>
+                    Recent HR decisions
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
+                    Logged in the database and mirrored to the system audit trail.
+                  </Typography>
+                  {recentHrActions.length === 0 ? (
+                    <Alert severity="info">No HR actions recorded yet.</Alert>
+                  ) : (
+                    <TableContainer>
+                      <Table size="small">
+                        <TableHead>
+                          <TableRow>
+                            <TableCell>When</TableCell>
+                            <TableCell>Action</TableCell>
+                            <TableCell>Target user</TableCell>
+                            <TableCell>Note</TableCell>
+                          </TableRow>
+                        </TableHead>
+                        <TableBody>
+                          {recentHrActions.slice(0, 12).map((a) => (
+                            <TableRow key={a.id}>
+                              <TableCell>{a.created_at ? String(a.created_at).slice(0, 19) : "—"}</TableCell>
+                              <TableCell>{a.action_type?.replace(/_/g, " ")}</TableCell>
+                              <TableCell sx={{ fontFamily: "monospace", fontSize: 12 }}>{a.target_user_id}</TableCell>
+                              <TableCell sx={{ maxWidth: 240, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                                {a.note || "—"}
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </TableContainer>
+                  )}
+                </CardContent>
+              </Card>
+            ) : null}
+
+            {!loading && activeSection === "records" ? (
+              <Card variant="outlined">
+                <CardContent>
+                  <Typography variant="h6" fontWeight={800}>
+                    Organization-wide employee records
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                    Only accounts with the Employee role (self-registration + CV onboarding). HR, Manager, and Executive accounts are not listed here.
+                  </Typography>
+                  <Divider sx={{ my: 2 }} />
+                  <TextField size="small" label="Search records" value={search} onChange={(e) => setSearch(e.target.value)} sx={{ mb: 2 }} />
+                  <TableContainer>
+                    <Table size="small">
+                      <TableHead>
+                        <TableRow>
+                          <TableCell>Name</TableCell>
+                          <TableCell>Email</TableCell>
+                          <TableCell>Department</TableCell>
+                          <TableCell>Job title</TableCell>
+                          <TableCell>Manager</TableCell>
+                          <TableCell>Status</TableCell>
+                          <TableCell align="right">Actions</TableCell>
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {filteredRecords.map((u) => (
+                          <TableRow key={u.id}>
+                            <TableCell>{u.full_name}</TableCell>
+                            <TableCell>{u.email}</TableCell>
+                            <TableCell>{u.department}</TableCell>
+                            <TableCell>{u.job_title}</TableCell>
+                            <TableCell sx={{ minWidth: 220 }}>
+                              <FormControl size="small" fullWidth>
+                                <InputLabel>Manager</InputLabel>
+                                <Select
+                                  label="Manager"
+                                  value={managerAssignments[u.id] ?? ""}
+                                  onChange={(e) =>
+                                    setManagerAssignments((prev) => ({ ...prev, [u.id]: e.target.value }))
+                                  }
+                                >
+                                  <MenuItem value="">Unassigned</MenuItem>
+                                  {managers.map((m) => (
+                                    <MenuItem key={m.id} value={m.id}>
+                                      {m.name}
+                                    </MenuItem>
+                                  ))}
+                                </Select>
+                              </FormControl>
+                            </TableCell>
+                            <TableCell>{u.status}</TableCell>
+                            <TableCell align="right">
+                              <Button size="small" variant="outlined" onClick={() => assignManager(u.id)}>
+                                Save
+                              </Button>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
+                  <Divider sx={{ my: 2 }} />
+                  <Typography variant="subtitle1" fontWeight={700}>
+                    Pending approval queue
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
+                    Self-registered employees only (same as the public registration form).
+                  </Typography>
+                  {pending.length === 0 ? <Alert severity="info">No pending records.</Alert> : (
+                    <TableContainer>
+                      <Table size="small">
+                        <TableHead>
+                          <TableRow>
+                            <TableCell>Name</TableCell>
+                            <TableCell>Email</TableCell>
+                            <TableCell>Department</TableCell>
+                            <TableCell>Role</TableCell>
+                            <TableCell align="right">Action</TableCell>
+                          </TableRow>
+                        </TableHead>
+                        <TableBody>
+                          {pending.map((u) => (
+                            <TableRow key={u.id}>
+                              <TableCell>{u.full_name}</TableCell>
+                              <TableCell>{u.email}</TableCell>
+                              <TableCell>{u.department}</TableCell>
+                              <TableCell>{u.role}</TableCell>
+                              <TableCell align="right">
+                                <Button size="small" variant="contained" onClick={() => approve(u.id)}>
+                                  Approve
+                                </Button>
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </TableContainer>
+                  )}
+                </CardContent>
+              </Card>
+            ) : null}
+
+            {!loading && activeSection === "masterdata" ? (
+              <Card variant="outlined">
+                <CardContent>
+                  <Typography variant="h6" fontWeight={800}>
+                    Master data control (HR)
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                    HR can manage departments and job titles, and review manager requests.
+                  </Typography>
+                  <Divider sx={{ my: 2 }} />
+                  <Grid container spacing={2} sx={{ mb: 2 }}>
+                    <Grid item xs={12} md={6}>
+                      <Stack direction="row" spacing={1}>
+                        <TextField size="small" label="New department" value={newDepartment} onChange={(e) => setNewDepartment(e.target.value)} fullWidth />
+                        <Button variant="contained" onClick={addDepartment}>Add</Button>
+                      </Stack>
+                    </Grid>
+                    <Grid item xs={12} md={6}>
+                      <Stack direction="row" spacing={1}>
+                        <TextField size="small" label="New job title" value={newJobTitle} onChange={(e) => setNewJobTitle(e.target.value)} fullWidth />
+                        <Button variant="contained" onClick={addJobTitle}>Add</Button>
+                      </Stack>
+                    </Grid>
+                    <Grid item xs={12}>
+                      <Stack direction="row" spacing={1}>
+                        <TextField size="small" label="New primary skill" value={newPrimarySkill} onChange={(e) => setNewPrimarySkill(e.target.value)} fullWidth />
+                        <Button variant="contained" onClick={addPrimarySkill}>Add</Button>
+                      </Stack>
+                    </Grid>
+                  </Grid>
+                  <Grid container spacing={2} sx={{ mb: 2 }}>
+                    <Grid item xs={12} md={4}>
+                      <Alert severity="info">Departments: {masterCatalog.departments.length}</Alert>
+                    </Grid>
+                    <Grid item xs={12} md={4}>
+                      <Alert severity="info">Job titles: {masterCatalog.job_titles.length}</Alert>
+                    </Grid>
+                    <Grid item xs={12} md={4}>
+                      <Alert severity="info">Primary skills: {masterCatalog.primary_skills.length}</Alert>
+                    </Grid>
+                  </Grid>
+                  <Typography variant="subtitle1" fontWeight={700} sx={{ mb: 1 }}>
+                    Manager requests
+                  </Typography>
+                  <TableContainer>
+                    <Table size="small">
+                      <TableHead>
+                        <TableRow>
+                          <TableCell>Type</TableCell>
+                          <TableCell>Value</TableCell>
+                          <TableCell>Status</TableCell>
+                          <TableCell align="right">Action</TableCell>
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {catalogRequests.map((r) => (
+                          <TableRow key={r.id}>
+                            <TableCell>{r.request_type}</TableCell>
+                            <TableCell>{r.value}</TableCell>
+                            <TableCell>{r.status}</TableCell>
+                            <TableCell align="right">
+                              {r.status === "pending" ? (
+                                <Stack direction="row" spacing={1} justifyContent="flex-end">
+                                  <Button size="small" variant="outlined" color="success" onClick={() => reviewRequest(r.id, "approved")}>Approve</Button>
+                                  <Button size="small" variant="outlined" color="error" onClick={() => reviewRequest(r.id, "rejected")}>Reject</Button>
+                                </Stack>
+                              ) : "—"}
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
+                  <Divider sx={{ my: 2 }} />
+                  <Typography variant="subtitle1" fontWeight={700} sx={{ mb: 1 }}>
+                    Departments (view / update / delete)
+                  </Typography>
+                  <TableContainer sx={{ mb: 2 }}>
+                    <Table size="small">
+                      <TableHead>
+                        <TableRow>
+                          <TableCell>Name</TableCell>
+                          <TableCell>Status</TableCell>
+                          <TableCell align="right">Actions</TableCell>
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {masterCatalogAdmin.departments.map((d) => (
+                          <TableRow key={d.id}>
+                            <TableCell>{d.name}</TableCell>
+                            <TableCell>{d.active ? "active" : "inactive"}</TableCell>
+                            <TableCell align="right">
+                              <Stack direction="row" spacing={1} justifyContent="flex-end">
+                                <Button size="small" variant="outlined" onClick={() => renameCatalogItem("departments", d.id, d.name, d.active)}>Rename</Button>
+                                <Button size="small" variant="outlined" onClick={() => toggleCatalogActive("departments", d)}>{d.active ? "Deactivate" : "Activate"}</Button>
+                                <Button size="small" color="error" variant="outlined" onClick={() => deleteCatalogItem("departments", d.id)}>Delete</Button>
+                              </Stack>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
+
+                  <Typography variant="subtitle1" fontWeight={700} sx={{ mb: 1 }}>
+                    Job Titles (view / update / delete)
+                  </Typography>
+                  <TableContainer sx={{ mb: 2 }}>
+                    <Table size="small">
+                      <TableHead>
+                        <TableRow>
+                          <TableCell>Name</TableCell>
+                          <TableCell>Status</TableCell>
+                          <TableCell align="right">Actions</TableCell>
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {masterCatalogAdmin.job_titles.map((j) => (
+                          <TableRow key={j.id}>
+                            <TableCell>{j.name}</TableCell>
+                            <TableCell>{j.active ? "active" : "inactive"}</TableCell>
+                            <TableCell align="right">
+                              <Stack direction="row" spacing={1} justifyContent="flex-end">
+                                <Button size="small" variant="outlined" onClick={() => renameCatalogItem("job-titles", j.id, j.name, j.active)}>Rename</Button>
+                                <Button size="small" variant="outlined" onClick={() => toggleCatalogActive("job-titles", j)}>{j.active ? "Deactivate" : "Activate"}</Button>
+                                <Button size="small" color="error" variant="outlined" onClick={() => deleteCatalogItem("job-titles", j.id)}>Delete</Button>
+                              </Stack>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
+
+                  <Typography variant="subtitle1" fontWeight={700} sx={{ mb: 1 }}>
+                    Primary Skills (view / update / delete)
+                  </Typography>
+                  <TableContainer>
+                    <Table size="small">
+                      <TableHead>
+                        <TableRow>
+                          <TableCell>Name</TableCell>
+                          <TableCell align="right">Actions</TableCell>
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {masterCatalogAdmin.primary_skills.map((s) => (
+                          <TableRow key={s.id}>
+                            <TableCell>{s.name}</TableCell>
+                            <TableCell align="right">
+                              <Stack direction="row" spacing={1} justifyContent="flex-end">
+                                <Button size="small" variant="outlined" onClick={() => renameCatalogItem("skills", s.id, s.name, true)}>Rename</Button>
+                                <Button size="small" color="error" variant="outlined" onClick={() => deleteCatalogItem("skills", s.id)}>Delete</Button>
+                              </Stack>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
+                </CardContent>
+              </Card>
+            ) : null}
+
+            {!loading && activeSection === "training" ? (
+              <Card variant="outlined">
+                <CardContent>
+                  <Typography variant="h6" fontWeight={800}>
+                    Training planning tools & budget tracking
+                  </Typography>
+                  <Divider sx={{ my: 2 }} />
+                  <Grid container spacing={2} sx={{ mb: 1 }}>
+                    <Grid item xs={12} md={4}>
+                      <Alert severity="info">Total budget: ${Number(trainingBudget.total || 0).toLocaleString()}</Alert>
+                    </Grid>
+                    <Grid item xs={12} md={4}>
+                      <Alert severity="success">Used: ${Number(trainingBudget.used || 0).toLocaleString()}</Alert>
+                    </Grid>
+                    <Grid item xs={12} md={4}>
+                      <Alert severity="warning">Remaining: ${Number(trainingBudget.remaining || 0).toLocaleString()}</Alert>
+                    </Grid>
+                  </Grid>
+                  <Alert severity="info" sx={{ mb: 2 }}>
+                    ROI estimate: {(Number(trainingPlan.roi_estimate || 0) * 100).toFixed(1)}%
+                  </Alert>
+                  <TableContainer>
+                    <Table size="small">
+                      <TableHead>
+                        <TableRow>
+                          <TableCell>Course name</TableCell>
+                          <TableCell>Skill targeted</TableCell>
+                          <TableCell align="right">Cost</TableCell>
+                          <TableCell align="right">Employees assigned</TableCell>
+                          <TableCell align="right">HR action</TableCell>
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {(trainingPlan.programs || []).map((p) => (
+                          <TableRow key={p.program_name}>
+                            <TableCell>{p.program_name}</TableCell>
+                            <TableCell>{p.target_skill}</TableCell>
+                            <TableCell align="right">${Number(p.cost || 0).toLocaleString()}</TableCell>
+                            <TableCell align="right">{p.employees_assigned}</TableCell>
+                            <TableCell align="right">
+                              <Button
+                                size="small"
+                                variant="outlined"
+                                onClick={() => {
+                                  setTrainingUserId(activeEmployees[0]?.id || "");
+                                  setTrainingNote("");
+                                  setTrainingDialog({
+                                    program_name: p.program_name,
+                                    target_skill: p.target_skill,
+                                    cost: p.cost
+                                  });
+                                }}
+                              >
+                                Assign employee
+                              </Button>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
+                  <Divider sx={{ my: 2 }} />
+                  <Stack direction={{ xs: "column", sm: "row" }} spacing={1} alignItems={{ xs: "stretch", sm: "center" }} justifyContent="space-between" sx={{ mb: 1 }}>
+                    <Typography variant="subtitle1" fontWeight={800}>
+                      Live training assignments (in progress)
+                    </Typography>
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      onClick={async () => {
+                        setError("");
+                        try {
+                          const res = await api.get("/analytics/hr/training-attendance-sessions/export", {
+                            responseType: "blob"
+                          });
+                          const blob = res.data instanceof Blob ? res.data : new Blob([res.data], { type: "text/csv" });
+                          const url = URL.createObjectURL(blob);
+                          const link = document.createElement("a");
+                          link.href = url;
+                          link.download = `training-attendance-sessions-${new Date().toISOString().slice(0, 10)}.csv`;
+                          document.body.appendChild(link);
+                          link.click();
+                          document.body.removeChild(link);
+                          URL.revokeObjectURL(url);
+                          setSnackbar({ open: true, message: "Attendance export downloaded." });
+                        } catch (err) {
+                          setError(getApiErrorMessage(err, "Failed to export attendance"));
+                        }
+                      }}
+                    >
+                      Export verified sessions (CSV)
+                    </Button>
+                  </Stack>
+                  <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+                    Real progress and completion are stored on each assignment. Use the <strong>Course PDF / video</strong> column (cloud icon) to attach the official file employees open while training — only PDF or MP4/WebM/MOV, not text links. Completing a course records certification and bumps the target skill. Use the export for session audit.
+                  </Typography>
+                  {hrOpenTrainings.length === 0 ? (
+                    <Alert severity="info">No open training assignments.</Alert>
+                  ) : (
+                    <TableContainer>
+                      <Table size="small">
+                        <TableHead>
+                          <TableRow>
+                            <TableCell>Employee</TableCell>
+                            <TableCell>Course</TableCell>
+                            <TableCell>Skill</TableCell>
+                            <TableCell>Status</TableCell>
+                            <TableCell>Attendance</TableCell>
+                            <TableCell>Time on course</TableCell>
+                            <TableCell>Live session</TableCell>
+                            <TableCell align="right">Progress %</TableCell>
+                            <TableCell>Course PDF / video</TableCell>
+                            <TableCell align="right">Actions</TableCell>
+                          </TableRow>
+                        </TableHead>
+                        <TableBody>
+                          {hrOpenTrainings.map((row) => (
+                            <TableRow key={row.id}>
+                              <TableCell>
+                                <Typography fontWeight={600}>{row.employee_name}</Typography>
+                                <Typography variant="caption" color="text.secondary">{row.employee_email}</Typography>
+                              </TableCell>
+                              <TableCell>{row.program_name}</TableCell>
+                              <TableCell>{row.target_skill}</TableCell>
+                              <TableCell>{row.status}</TableCell>
+                              <TableCell>{(row.attendance_tier || "—").replace(/_/g, " ")}</TableCell>
+                              <TableCell>{row.total_learning_display || "0s"}</TableCell>
+                              <TableCell>{row.session_active ? "Yes" : "No"}</TableCell>
+                              <TableCell align="right" sx={{ minWidth: 120 }}>
+                                <TextField
+                                  size="small"
+                                  type="number"
+                                  inputProps={{ min: 0, max: 100 }}
+                                  value={hrTrainPct[row.id] ?? row.progress_pct}
+                                  onChange={(e) => setHrTrainPct((prev) => ({ ...prev, [row.id]: Number(e.target.value) }))}
+                                />
+                              </TableCell>
+                              <TableCell sx={{ minWidth: 168 }}>
+                                <Button
+                                  size="small"
+                                  variant={row.course_material_filename ? "outlined" : "contained"}
+                                  color="primary"
+                                  startIcon={<CloudUploadIcon fontSize="small" />}
+                                  onClick={() =>
+                                    setTrainingMaterialsEdit({
+                                      id: row.id,
+                                      label: `${row.employee_name} — ${row.program_name}`,
+                                      filename: row.course_material_filename || "",
+                                      kind: row.course_material_kind || ""
+                                    })
+                                  }
+                                >
+                                  {row.course_material_filename ? "Replace PDF/video" : "Upload PDF/video"}
+                                </Button>
+                              </TableCell>
+                              <TableCell align="right">
+                                <Stack direction="row" spacing={0.5} justifyContent="flex-end" flexWrap="wrap" useFlexGap>
+                                  <Button
+                                    size="small"
+                                    variant="outlined"
+                                    onClick={() =>
+                                      hrUpdateTrainingAssignment(row.id, {
+                                        progress_pct: Number(hrTrainPct[row.id] ?? row.progress_pct)
+                                      })
+                                    }
+                                  >
+                                    Save progress
+                                  </Button>
+                                  <Button
+                                    size="small"
+                                    variant="contained"
+                                    color="success"
+                                    onClick={() =>
+                                      hrUpdateTrainingAssignment(row.id, {
+                                        mark_completed: true,
+                                        certificate_status: "Issued"
+                                      })
+                                    }
+                                  >
+                                    Mark complete
+                                  </Button>
+                                </Stack>
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </TableContainer>
+                  )}
+                </CardContent>
+              </Card>
+            ) : null}
+
+            {!loading && activeSection === "gaps" ? (
+              <Card variant="outlined">
+                <CardContent>
+                  <Typography variant="h6" fontWeight={800}>
+                    Organization-level skill gap analysis
+                  </Typography>
+                  <Divider sx={{ my: 2 }} />
+                  <TextField size="small" label="Search gap skill" value={search} onChange={(e) => setSearch(e.target.value)} sx={{ mb: 2 }} />
+                  <TableContainer sx={{ mb: 2 }}>
+                    <Table size="small">
+                      <TableHead>
+                        <TableRow>
+                          <TableCell>Skill</TableCell>
+                          <TableCell align="right">Required</TableCell>
+                          <TableCell align="right">Available</TableCell>
+                          <TableCell align="right">Gap</TableCell>
+                          <TableCell>Severity</TableCell>
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {filteredGapTable.slice(0, 50).map((r) => (
+                          <TableRow key={r.skill}>
+                            <TableCell>{r.skill}</TableCell>
+                            <TableCell align="right">{r.required}</TableCell>
+                            <TableCell align="right">{r.available}</TableCell>
+                            <TableCell align="right">{r.gap}</TableCell>
+                            <TableCell>
+                              <Alert
+                                severity={r.severity === "HIGH" ? "error" : r.severity === "MEDIUM" ? "warning" : "success"}
+                                icon={false}
+                                sx={{ py: 0.5 }}
+                              >
+                                {r.severity}
+                              </Alert>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
+                  <Box sx={{ width: "100%", height: 280, mb: 2 }}>
+                    <ResponsiveContainer>
+                      <BarChart data={filteredTopGaps.slice(0, 12)}>
+                        <CartesianGrid stroke={colors.grid} strokeDasharray="3 3" />
+                        <XAxis dataKey="skill" hide />
+                        <YAxis />
+                        <Tooltip contentStyle={tooltipStyle} />
+                        <Legend />
+                        <Bar dataKey="total_gap" fill={colors.warning} name="Gap severity" />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </Box>
+                  <Stack direction="row" justifyContent="flex-end" sx={{ mb: 1 }}>
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      onClick={() =>
+                        exportRowsToCsv("hr-top-gaps.csv", filteredTopGaps, [
+                          { header: "Skill", value: (r) => r.skill },
+                          { header: "Total Gap", value: (r) => r.total_gap }
+                        ])
+                      }
+                    >
+                      Export CSV
+                    </Button>
+                  </Stack>
+                  <TableContainer>
+                    <Table size="small">
+                      <TableHead>
+                        <TableRow>
+                          <TableCell>Skill</TableCell>
+                          <TableCell align="right">Total gap</TableCell>
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {filteredTopGaps.map((g) => (
+                          <TableRow key={g.skill}>
+                            <TableCell>{g.skill}</TableCell>
+                            <TableCell align="right">{g.total_gap}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
+                </CardContent>
+              </Card>
+            ) : null}
+
+            {!loading && activeSection === "compliance" ? (
+              <Card variant="outlined">
+                <CardContent>
+                  <Typography variant="h6" fontWeight={800}>
+                    Certification & compliance tracking
+                  </Typography>
+                  <Divider sx={{ my: 2 }} />
+                  <Grid container spacing={2} sx={{ mb: 1 }}>
+                    <Grid item xs={12} md={6}>
+                      <Alert severity="warning">Expiring soon: {complianceData?.alerts?.expiring_soon || 0}</Alert>
+                    </Grid>
+                    <Grid item xs={12} md={6}>
+                      <Alert severity="error">Missing certifications: {complianceData?.alerts?.missing || 0}</Alert>
+                    </Grid>
+                  </Grid>
+                  <TableContainer>
+                    <Table size="small">
+                      <TableHead>
+                        <TableRow>
+                          <TableCell>Employee</TableCell>
+                          <TableCell>Certification</TableCell>
+                          <TableCell>Expiry Date</TableCell>
+                          <TableCell>Status</TableCell>
+                          <TableCell align="right">HR action</TableCell>
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {(complianceData.rows || []).map((r, idx) => (
+                          <TableRow key={`${r.user_id || r.employee}-${idx}`}>
+                            <TableCell>{r.employee}</TableCell>
+                            <TableCell>{r.certification}</TableCell>
+                            <TableCell>{r.expiry_date}</TableCell>
+                            <TableCell>{r.status}</TableCell>
+                            <TableCell align="right">
+                              <Button
+                                size="small"
+                                variant="outlined"
+                                onClick={() => {
+                                  setComplianceUntil("");
+                                  setComplianceNote("");
+                                  setComplianceDialog({
+                                    userId: r.user_id,
+                                    employee: r.employee,
+                                    certification: r.certification
+                                  });
+                                }}
+                                disabled={!r.user_id}
+                              >
+                                Record renewal
+                              </Button>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
+                </CardContent>
+              </Card>
+            ) : null}
+
+            {!loading && activeSection === "recruitment" ? (
+              <Card variant="outlined">
+                <CardContent>
+                  <Typography variant="h6" fontWeight={800}>
+                    Recruitment insights
+                  </Typography>
+                  <Divider sx={{ my: 2 }} />
+                  <Alert severity="info" sx={{ mb: 2 }}>
+                    Active workforce: {recruitmentInsights.employeeCount} employees
+                  </Alert>
+                  <TableContainer>
+                    <Table size="small">
+                      <TableHead>
+                        <TableRow>
+                          <TableCell>Priority hiring skill</TableCell>
+                          <TableCell align="right">Gap level</TableCell>
+                          <TableCell>Urgency</TableCell>
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {recruitmentInsights.openDemand.map((g) => (
+                          <TableRow key={g.skill}>
+                            <TableCell>{g.skill}</TableCell>
+                            <TableCell align="right">{g.gap_level}</TableCell>
+                            <TableCell>{g.urgency}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
+                  <Divider sx={{ my: 2 }} />
+                  <Typography variant="subtitle1" fontWeight={700} sx={{ mb: 1 }}>
+                    Hiring suggestions
+                  </Typography>
+                  <TableContainer>
+                    <Table size="small">
+                      <TableHead>
+                        <TableRow>
+                          <TableCell>Role</TableCell>
+                          <TableCell align="right">Number needed</TableCell>
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {(recruitmentData.hiring_suggestions || []).map((h) => (
+                          <TableRow key={h.role}>
+                            <TableCell>{h.role}</TableCell>
+                            <TableCell align="right">{h.number_needed}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
+                </CardContent>
+              </Card>
+            ) : null}
+
+            {!loading && activeSection === "pipeline" ? (
+              <Card variant="outlined">
+                <CardContent>
+                  <Typography variant="h6" fontWeight={800}>
+                    Talent pipeline visualization
+                  </Typography>
+                  <Divider sx={{ my: 2 }} />
+                  <Box sx={{ width: "100%", height: 280 }}>
+                    <ResponsiveContainer>
+                      <BarChart
+                        data={(pipelineData.rows || []).slice(0, 8)}
+                      >
+                        <CartesianGrid stroke={colors.grid} strokeDasharray="3 3" />
+                        <XAxis dataKey="employee" hide />
+                        <YAxis />
+                        <Tooltip contentStyle={tooltipStyle} />
+                        <Bar dataKey="promotion_readiness_score" fill={colors.primary} name="Promotion readiness" />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </Box>
+                  <TableContainer>
+                    <Table size="small">
+                      <TableHead>
+                        <TableRow>
+                          <TableCell>Employee</TableCell>
+                          <TableCell>Department</TableCell>
+                          <TableCell align="right">Skill growth</TableCell>
+                          <TableCell align="right">Promotion readiness</TableCell>
+                          <TableCell align="right">HR action</TableCell>
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {(pipelineData.rows || []).slice(0, 20).map((r) => (
+                          <TableRow key={`${r.user_id || r.employee}-${r.department}`}>
+                            <TableCell>{r.employee}</TableCell>
+                            <TableCell>{r.department}</TableCell>
+                            <TableCell align="right">{r.skill_growth}</TableCell>
+                            <TableCell align="right">{r.promotion_readiness_score}</TableCell>
+                            <TableCell align="right">
+                              <Button
+                                size="small"
+                                variant="outlined"
+                                onClick={() => {
+                                  setPromotionNote("");
+                                  setPromotionDialog({
+                                    userId: r.user_id,
+                                    employee: r.employee,
+                                    readiness_score: r.promotion_readiness_score
+                                  });
+                                }}
+                                disabled={!r.user_id}
+                              >
+                                Recommend promotion
+                              </Button>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
+                </CardContent>
+              </Card>
+            ) : null}
+
+            {!loading && activeSection === "cv" ? (
+              <Card variant="outlined">
+                <CardContent>
+                  <Typography variant="h6" fontWeight={800}>
+                    CV validation & skill verification
+                  </Typography>
+                  <Divider sx={{ my: 2 }} />
+                  {cvValidation.length === 0 ? (
+                    <Alert severity="success">No primary-skill mismatches detected.</Alert>
+                  ) : null}
+                  <TableContainer>
+                    <Table size="small">
+                      <TableHead>
+                        <TableRow>
+                          <TableCell>Employee</TableCell>
+                          <TableCell>Email</TableCell>
+                          <TableCell>Declared primary skill</TableCell>
+                          <TableCell>CV skills (sample)</TableCell>
+                          <TableCell>Status</TableCell>
+                          <TableCell align="right">HR action</TableCell>
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {cvValidation.slice(0, 30).map((r) => (
+                          <TableRow key={r.user_id}>
+                            <TableCell>{r.employee}</TableCell>
+                            <TableCell>{r.email}</TableCell>
+                            <TableCell>{r.declared_primary_skill}</TableCell>
+                            <TableCell sx={{ maxWidth: 380, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                              {(r.cv_skills || []).join(", ")}
+                            </TableCell>
+                            <TableCell>{r.status}</TableCell>
+                            <TableCell align="right">
+                              <Stack direction="row" spacing={0.5} justifyContent="flex-end" flexWrap="wrap" useFlexGap>
+                                <Button size="small" color="success" variant="outlined" onClick={() => { setCvNote(""); setCvDialog({ userId: r.user_id, name: r.employee, decision: "approve" }); }}>
+                                  Approve
+                                </Button>
+                                <Button size="small" color="error" variant="outlined" onClick={() => { setCvNote(""); setCvDialog({ userId: r.user_id, name: r.employee, decision: "reject" }); }}>
+                                  Reject
+                                </Button>
+                              </Stack>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
+                </CardContent>
+              </Card>
+            ) : null}
+
+            {!loading && activeSection === "performance" ? (
+              <Card variant="outlined">
+                <CardContent>
+                  <Typography variant="h6" fontWeight={800}>
+                    Performance review support
+                  </Typography>
+                  <Divider sx={{ my: 2 }} />
+                  <TableContainer>
+                    <Table size="small">
+                      <TableHead>
+                        <TableRow>
+                          <TableCell>Employee</TableCell>
+                          <TableCell>Department</TableCell>
+                          <TableCell align="right">Project success</TableCell>
+                          <TableCell align="right">Skill improvement</TableCell>
+                          <TableCell align="right">Training completion</TableCell>
+                          <TableCell align="right">Performance score</TableCell>
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {(performanceData.rows || []).slice(0, 30).map((r) => (
+                          <TableRow key={`${r.employee}-${r.department}`}>
+                            <TableCell>{r.employee}</TableCell>
+                            <TableCell>{r.department}</TableCell>
+                            <TableCell align="right">{r.project_success}</TableCell>
+                            <TableCell align="right">{r.skill_improvement}</TableCell>
+                            <TableCell align="right">{r.training_completion}</TableCell>
+                            <TableCell align="right">{r.performance_score}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
+                </CardContent>
+              </Card>
+            ) : null}
+            </div>
+          </Grid>
+        </Grid>
+      </Stack>
+
+      <Dialog open={Boolean(cvDialog)} onClose={() => setCvDialog(null)} fullWidth maxWidth="sm">
+        <DialogTitle>
+          {cvDialog?.decision === "approve" ? "Approve" : "Reject"} primary skill — {cvDialog?.name}
+        </DialogTitle>
+        <DialogContent>
+          <TextField
+            margin="dense"
+            label="Note (optional)"
+            fullWidth
+            multiline
+            minRows={2}
+            value={cvNote}
+            onChange={(e) => setCvNote(e.target.value)}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setCvDialog(null)}>Cancel</Button>
+          <Button variant="contained" onClick={submitCvDecision}>
+            Confirm
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={Boolean(trainingDialog)} onClose={() => setTrainingDialog(null)} fullWidth maxWidth="sm">
+        <DialogTitle>Assign training</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+            {trainingDialog?.program_name} — {trainingDialog?.target_skill}
+          </Typography>
+          <FormControl fullWidth margin="dense" size="small">
+            <InputLabel id="train-user-label">Employee</InputLabel>
+            <Select
+              labelId="train-user-label"
+              label="Employee"
+              value={trainingUserId}
+              onChange={(e) => setTrainingUserId(e.target.value)}
+            >
+              {activeEmployees.map((u) => (
+                <MenuItem key={u.id} value={u.id}>
+                  {u.full_name} ({u.email})
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+          <TextField
+            margin="dense"
+            label="Note (optional)"
+            fullWidth
+            multiline
+            minRows={2}
+            value={trainingNote}
+            onChange={(e) => setTrainingNote(e.target.value)}
+          />
+          <Alert severity="info" sx={{ mt: 2 }}>
+            After you click <strong>Save assignment</strong>, the <strong>Upload PDF/video</strong> window opens automatically. You can also use the <strong>Course PDF / video</strong> column in the table below (same cloud upload button on each row).
+          </Alert>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setTrainingDialog(null)}>Cancel</Button>
+          <Button variant="contained" onClick={submitTrainingAssign} disabled={!trainingUserId}>
+            Save assignment
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog
+        open={Boolean(trainingMaterialsEdit)}
+        onClose={() => {
+          if (trainingMaterialFileRef.current) trainingMaterialFileRef.current.value = "";
+          setTrainingMaterialsEdit(null);
+        }}
+        fullWidth
+        maxWidth="sm"
+      >
+        <DialogTitle>Upload course PDF or video</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+            Assignment: {trainingMaterialsEdit?.label}
+          </Typography>
+          {trainingMaterialsEdit?.filename ? (
+            <Typography variant="body2" sx={{ mb: 1 }}>
+              Current file: <strong>{trainingMaterialsEdit.filename}</strong> ({trainingMaterialsEdit.kind || "file"})
+            </Typography>
+          ) : (
+            <Typography variant="body2" sx={{ mb: 1 }}>
+              No file uploaded yet.
+            </Typography>
+          )}
+          {trainingMaterialsEdit?.filename ? (
+            <Button size="small" sx={{ mb: 2 }} onClick={() => hrDownloadCourseMaterial(trainingMaterialsEdit.id, trainingMaterialsEdit.filename)}>
+              Download current file
+            </Button>
+          ) : null}
+          <input
+            ref={trainingMaterialFileRef}
+            type="file"
+            accept=".pdf,.mp4,.webm,.mov,application/pdf,video/mp4,video/webm,video/quicktime"
+            style={{ display: "none" }}
+          />
+          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap sx={{ mb: 1 }}>
+            <Button variant="outlined" onClick={() => trainingMaterialFileRef.current?.click()}>
+              Choose PDF or video
+            </Button>
+          </Stack>
+          <Typography variant="caption" color="text.secondary" display="block">
+            Allowed: PDF, MP4, WebM, MOV. Max 80 MB. Uploading replaces any previous file.
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button
+            onClick={() => {
+              if (trainingMaterialFileRef.current) trainingMaterialFileRef.current.value = "";
+              setTrainingMaterialsEdit(null);
+            }}
+          >
+            Cancel
+          </Button>
+          <Button variant="contained" onClick={uploadTrainingCourseMaterial}>
+            Upload
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={Boolean(complianceDialog)} onClose={() => setComplianceDialog(null)} fullWidth maxWidth="sm">
+        <DialogTitle>Record certification renewal</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" sx={{ mb: 1 }}>
+            {complianceDialog?.employee} — {complianceDialog?.certification}
+          </Typography>
+          <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 2 }}>
+            For employees without a parsed certificate, keep certification as &quot;None&quot; so the renewal matches the dashboard row.
+          </Typography>
+          <TextField
+            margin="dense"
+            label="Valid until (YYYY-MM-DD), optional"
+            fullWidth
+            placeholder="Leave empty for default +365 days"
+            value={complianceUntil}
+            onChange={(e) => setComplianceUntil(e.target.value)}
+          />
+          <TextField
+            margin="dense"
+            label="Note (optional)"
+            fullWidth
+            multiline
+            minRows={2}
+            value={complianceNote}
+            onChange={(e) => setComplianceNote(e.target.value)}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setComplianceDialog(null)}>Cancel</Button>
+          <Button variant="contained" onClick={submitComplianceRenewal}>
+            Save
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={Boolean(promotionDialog)} onClose={() => setPromotionDialog(null)} fullWidth maxWidth="sm">
+        <DialogTitle>Promotion recommendation</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" sx={{ mb: 1 }}>
+            {promotionDialog?.employee}
+            {promotionDialog?.readiness_score != null ? ` — readiness ${promotionDialog.readiness_score}` : ""}
+          </Typography>
+          <TextField
+            margin="dense"
+            label="Note (optional)"
+            fullWidth
+            multiline
+            minRows={3}
+            value={promotionNote}
+            onChange={(e) => setPromotionNote(e.target.value)}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setPromotionDialog(null)}>Cancel</Button>
+          <Button variant="contained" onClick={submitPromotionRecommend}>
+            Record recommendation
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Snackbar
+        open={snackbar.open}
+        autoHideDuration={5000}
+        onClose={() => setSnackbar((s) => ({ ...s, open: false }))}
+        message={snackbar.message}
+      />
+    </AppShell>
+  );
+}
+
