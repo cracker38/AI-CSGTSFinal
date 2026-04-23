@@ -1,0 +1,931 @@
+from __future__ import annotations
+
+import uuid
+from datetime import date, datetime, timezone
+
+import os
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import FileResponse
+from sqlalchemy.orm import Session
+
+from app.ai.gap import compute_skill_gaps, recommend_actions
+from app.api.deps import get_current_user
+from app.db.session import get_db
+from app.models.employee_profile import EmployeeProfile
+from app.models.hr_action import HrAction
+from app.models.manager_project import EmployeeProjectDailyReport, ManagerProject, ProjectAssignment, ProjectStatus
+from app.models.skill import Skill
+from app.models.user import User, UserRole
+from app.models.user_skill import SkillSource, UserSkill
+from app.schemas.hr_action import HrActionPublic, MaterialReadingProgressUpdate, TrainingAssignmentProgressUpdate
+from app.services.training_assignments import (
+    apply_material_reading_progress,
+    apply_training_assignment_update,
+    end_training_session,
+    ensure_training_attendance_defaults,
+    refresh_stale_training_sessions,
+    start_training_session,
+    training_assignment_to_progress_item,
+    training_session_heartbeat,
+)
+from app.services.training_materials import get_material_download_path
+
+
+router = APIRouter()
+
+
+def _required_skills_for_user(user: User) -> dict[str, int]:
+    # Starter rules; in enterprise version, this comes from role/department/job profiles (SFIA/ITIL aligned).
+    base: dict[str, int] = {
+        user.primary_skill.lower(): 3,
+        "communication": 2,
+        "project management": 1,
+    }
+    jt = user.job_title.lower()
+    if "data" in jt or "analyst" in jt:
+        base.update({"python": 3, "sql": 3, "pandas": 2, "machine learning": 2})
+    if "engineer" in jt or "developer" in jt:
+        base.update({"git": 2, "docker": 1, "sql": 2})
+    if "manager" in jt:
+        base.update({"agile": 2, "jira": 2})
+    return base
+
+
+def _employee_profile_or_404(db: Session, user_id) -> EmployeeProfile:
+    profile = db.query(EmployeeProfile).filter(EmployeeProfile.user_id == user_id).one_or_none()
+    if not profile:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee profile not found")
+    return profile
+
+
+def _assigned_project_or_404(db: Session, employee_id, project_id: uuid.UUID) -> tuple[ManagerProject, ProjectAssignment]:
+    row = (
+        db.query(ManagerProject, ProjectAssignment)
+        .join(ProjectAssignment, ProjectAssignment.project_id == ManagerProject.id)
+        .filter(ManagerProject.id == project_id, ProjectAssignment.employee_id == employee_id)
+        .one_or_none()
+    )
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Assigned project not found")
+    return row
+
+
+@router.get("/my-skill-gaps")
+def my_skill_gaps(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    # STRICT: employee dashboard analytics are employee-only.
+    if user.role != UserRole.employee:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    rows = (
+        db.query(Skill.name, UserSkill.level)
+        .join(UserSkill, Skill.id == UserSkill.skill_id)
+        .filter(UserSkill.user_id == user.id)
+        .all()
+    )
+    current = {name: int(level) for (name, level) in rows}
+    required = _required_skills_for_user(user)
+
+    gaps = compute_skill_gaps(current=current, required=required, confidence_base=0.65)
+    recs = recommend_actions(gaps)
+    return {
+        "required_profile": required,
+        "current_profile": current,
+        "gaps": [g.__dict__ for g in gaps],
+        "recommendations": recs,
+        "explainability": {
+            "rule": "Required skills are derived from job_title + primary_skill starter rules; current skills are from CV/self/manager inventory.",
+            "confidence_notes": "Confidence is higher when a skill is present in the validated inventory; missing skills reduce confidence.",
+        },
+    }
+
+
+@router.get("/employee/overview")
+def employee_overview(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    if user.role != UserRole.employee:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    profile = _employee_profile_or_404(db, user.id)
+    total_fields = 9
+    filled = sum(
+        1
+        for v in [
+            user.full_name,
+            user.email,
+            user.phone_number,
+            user.department,
+            user.job_title,
+            user.primary_skill,
+            user.country,
+            user.experience_level,
+            profile.headline,
+        ]
+        if v and str(v).strip()
+    )
+    skills = db.query(UserSkill).filter(UserSkill.user_id == user.id).all()
+    skill_score = round(sum(int(s.level) for s in skills) / max(1, len(skills)), 2)
+    gaps = compute_skill_gaps(
+        current={
+            n: int(l)
+            for (n, l) in db.query(Skill.name, UserSkill.level)
+            .join(UserSkill, Skill.id == UserSkill.skill_id)
+            .filter(UserSkill.user_id == user.id)
+            .all()
+        },
+        required=_required_skills_for_user(user),
+        confidence_base=0.65,
+    )
+    gap_score = round(sum(max(0, g.gap) for g in gaps) / max(1, len(gaps)), 2)
+    refresh_stale_training_sessions(db, user.id)
+    active_trainings = (
+        db.query(HrAction)
+        .filter(HrAction.target_user_id == user.id, HrAction.action_type == "training_assign", HrAction.status.in_(["assigned", "in_progress"]))
+        .count()
+    )
+    actively_learning = 0
+    for row in (
+        db.query(HrAction)
+        .filter(HrAction.target_user_id == user.id, HrAction.action_type == "training_assign", HrAction.status.in_(["assigned", "in_progress"]))
+        .all()
+    ):
+        st_learning = (row.payload or {}).get("learning_state")
+        if st_learning == "in_session":
+            actively_learning += 1
+    ai = profile.ai_profile or {}
+    notifications = list(ai.get("employee_notifications") or [])
+    assigned_projects_count = db.query(ProjectAssignment).filter(ProjectAssignment.employee_id == user.id).count()
+    active_assigned_projects = (
+        db.query(ProjectAssignment)
+        .join(ManagerProject, ManagerProject.id == ProjectAssignment.project_id)
+        .filter(
+            ProjectAssignment.employee_id == user.id,
+            ManagerProject.status.in_([ProjectStatus.active, ProjectStatus.draft]),
+        )
+        .count()
+    )
+    return {
+        "welcome_name": user.full_name,
+        "profile_completion_pct": round((filled / total_fields) * 100, 2),
+        "skill_strength_score": skill_score,
+        "skill_gap_score": gap_score,
+        "active_trainings": active_trainings,
+        "actively_learning_now": actively_learning,
+        "notifications_count": len(notifications),
+        "assigned_projects_count": assigned_projects_count,
+        "active_assigned_projects": active_assigned_projects,
+    }
+
+
+@router.get("/employee/projects")
+def employee_projects(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> list[dict]:
+    if user.role != UserRole.employee:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    rows = (
+        db.query(ProjectAssignment, ManagerProject, User.full_name)
+        .join(ManagerProject, ManagerProject.id == ProjectAssignment.project_id)
+        .join(User, User.id == ManagerProject.manager_id)
+        .filter(ProjectAssignment.employee_id == user.id)
+        .order_by(ManagerProject.created_at.desc())
+        .all()
+    )
+    out = []
+    for assignment, project, manager_name in rows:
+        latest = (
+            db.query(EmployeeProjectDailyReport)
+            .filter(
+                EmployeeProjectDailyReport.project_id == project.id,
+                EmployeeProjectDailyReport.employee_id == user.id,
+            )
+            .order_by(EmployeeProjectDailyReport.work_date.desc(), EmployeeProjectDailyReport.created_at.desc())
+            .first()
+        )
+        report_days = (
+            db.query(EmployeeProjectDailyReport)
+            .filter(
+                EmployeeProjectDailyReport.project_id == project.id,
+                EmployeeProjectDailyReport.employee_id == user.id,
+            )
+            .count()
+        )
+        progress_pct = float(latest.progress_pct) if latest else 0.0
+        out.append(
+            {
+                "project_id": str(project.id),
+                "name": project.name,
+                "description": project.description,
+                "status": project.status.value if hasattr(project.status, "value") else str(project.status),
+                "deadline": project.deadline.isoformat() if project.deadline else None,
+                "manager_name": manager_name,
+                "allocation_pct": float(assignment.allocation_pct or 0),
+                "days_reported": report_days,
+                "current_progress_pct": round(progress_pct, 1),
+                "last_report_date": latest.work_date.isoformat() if latest else None,
+                "last_report_status": latest.status if latest else None,
+            }
+        )
+    return out
+
+
+@router.get("/employee/projects/{project_id}/daily-reports")
+def employee_project_daily_reports(
+    project_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> list[dict]:
+    if user.role != UserRole.employee:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    _assigned_project_or_404(db, user.id, project_id)
+    rows = (
+        db.query(EmployeeProjectDailyReport)
+        .filter(
+            EmployeeProjectDailyReport.project_id == project_id,
+            EmployeeProjectDailyReport.employee_id == user.id,
+        )
+        .order_by(EmployeeProjectDailyReport.work_date.desc(), EmployeeProjectDailyReport.created_at.desc())
+        .all()
+    )
+    return [
+        {
+            "id": str(r.id),
+            "work_date": r.work_date.isoformat(),
+            "hours_spent": float(r.hours_spent),
+            "progress_pct": float(r.progress_pct),
+            "status": r.status,
+            "summary": r.summary,
+            "blockers": r.blockers,
+            "next_plan": r.next_plan,
+            "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+        }
+        for r in rows
+    ]
+
+
+@router.post("/employee/projects/{project_id}/daily-reports")
+def upsert_employee_project_daily_report(
+    project_id: uuid.UUID,
+    payload: dict,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    if user.role != UserRole.employee:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    project, _ = _assigned_project_or_404(db, user.id, project_id)
+
+    work_date_raw = str(payload.get("work_date") or "").strip()
+    if work_date_raw:
+        try:
+            work_date = date.fromisoformat(work_date_raw)
+        except ValueError:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="work_date must be YYYY-MM-DD")
+    else:
+        work_date = datetime.now(timezone.utc).date()
+
+    summary = str(payload.get("summary") or "").strip()
+    if not summary:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="summary is required")
+    blockers = str(payload.get("blockers") or "").strip()
+    next_plan = str(payload.get("next_plan") or "").strip()
+    status_value = str(payload.get("status") or "in_progress").strip().lower()
+    if status_value not in {"in_progress", "blocked", "completed"}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="status must be in_progress, blocked, or completed")
+    hours_spent = float(payload.get("hours_spent") or 0)
+    progress_pct = float(payload.get("progress_pct") or 0)
+    if hours_spent < 0 or hours_spent > 24:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="hours_spent must be between 0 and 24")
+    if progress_pct < 0 or progress_pct > 100:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="progress_pct must be between 0 and 100")
+
+    row = (
+        db.query(EmployeeProjectDailyReport)
+        .filter(
+            EmployeeProjectDailyReport.project_id == project_id,
+            EmployeeProjectDailyReport.employee_id == user.id,
+            EmployeeProjectDailyReport.work_date == work_date,
+        )
+        .one_or_none()
+    )
+    if row:
+        row.hours_spent = hours_spent
+        row.progress_pct = progress_pct
+        row.status = status_value
+        row.summary = summary[:1200]
+        row.blockers = blockers[:1200]
+        row.next_plan = next_plan[:1200]
+    else:
+        db.add(
+            EmployeeProjectDailyReport(
+                project_id=project_id,
+                employee_id=user.id,
+                work_date=work_date,
+                hours_spent=hours_spent,
+                progress_pct=progress_pct,
+                status=status_value,
+                summary=summary[:1200],
+                blockers=blockers[:1200],
+                next_plan=next_plan[:1200],
+            )
+        )
+    # Keep project state aligned with employee delivery updates.
+    if status_value == "completed" or progress_pct >= 100:
+        project.status = ProjectStatus.completed
+    elif project.status == ProjectStatus.draft:
+        project.status = ProjectStatus.active
+    db.add(project)
+    db.commit()
+    return {"ok": True}
+
+
+@router.get("/employee/profile")
+def employee_profile(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    if user.role != UserRole.employee:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    profile = _employee_profile_or_404(db, user.id)
+    cv_extract = profile.cv_extract or {}
+    return {
+        "basic": {
+            "name": user.full_name,
+            "email": user.email,
+            "phone": user.phone_number,
+            "department": user.department,
+            "job_title": user.job_title,
+            "country": user.country,
+            "experience_level": user.experience_level,
+            "primary_skill": user.primary_skill,
+            "headline": profile.headline or "",
+        },
+        "cv_preview": {
+            "skills": (cv_extract.get("skills") or [])[:20],
+            "certifications": (cv_extract.get("certifications") or [])[:20],
+            "experience": (cv_extract.get("experience") or [])[:20],
+        },
+        "experience_timeline": (cv_extract.get("experience") or [])[:20],
+    }
+
+
+@router.put("/employee/profile")
+def update_employee_profile(
+    payload: dict,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    if user.role != UserRole.employee:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    profile = _employee_profile_or_404(db, user.id)
+    basic = payload.get("basic") or {}
+    allowed_user_fields = {"phone_number", "country", "primary_skill"}
+    for key in allowed_user_fields:
+        if key in basic and isinstance(basic[key], str) and basic[key].strip():
+            setattr(user, key, basic[key].strip())
+    if "headline" in basic:
+        profile.headline = str(basic.get("headline") or "")[:200]
+    db.add(user)
+    db.add(profile)
+    db.commit()
+    return {"ok": True}
+
+
+@router.get("/employee/skills")
+def employee_skills(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> list[dict]:
+    if user.role != UserRole.employee:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    rows = (
+        db.query(UserSkill, Skill)
+        .join(Skill, Skill.id == UserSkill.skill_id)
+        .filter(UserSkill.user_id == user.id)
+        .order_by(Skill.name.asc())
+        .all()
+    )
+    return [
+        {
+            "id": str(us.id),
+            "skill_id": str(s.id),
+            "skill": s.name,
+            "level": int(us.level),
+            "last_updated": us.updated_at.isoformat(),
+        }
+        for us, s in rows
+    ]
+
+
+@router.post("/employee/skills")
+def add_employee_skill(
+    payload: dict,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    if user.role != UserRole.employee:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    skill_name = str(payload.get("skill") or "").strip()
+    level = int(payload.get("level") or 1)
+    if not skill_name:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Skill is required")
+    if level < 1 or level > 4:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Level must be between 1 and 4")
+    skill = db.query(Skill).filter(Skill.name == skill_name).one_or_none()
+    if not skill:
+        skill = Skill(name=skill_name, category="general")
+        db.add(skill)
+        db.flush()
+    existing = db.query(UserSkill).filter(UserSkill.user_id == user.id, UserSkill.skill_id == skill.id).one_or_none()
+    if existing:
+        existing.level = level
+        existing.source = SkillSource.self
+    else:
+        db.add(UserSkill(user_id=user.id, skill_id=skill.id, level=level, source=SkillSource.self))
+    db.commit()
+    return {"ok": True}
+
+
+@router.patch("/employee/skills/{user_skill_id}")
+def update_employee_skill(
+    user_skill_id: str,
+    payload: dict,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    if user.role != UserRole.employee:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    try:
+        row_id = uuid.UUID(user_skill_id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid skill row id")
+    row = db.query(UserSkill).filter(UserSkill.id == row_id, UserSkill.user_id == user.id).one_or_none()
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Skill row not found")
+    level = int(payload.get("level") or row.level)
+    if level < 1 or level > 4:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Level must be between 1 and 4")
+    row.level = level
+    row.source = SkillSource.self
+    db.commit()
+    return {"ok": True}
+
+
+@router.delete("/employee/skills/{user_skill_id}")
+def delete_employee_skill(
+    user_skill_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    if user.role != UserRole.employee:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    try:
+        row_id = uuid.UUID(user_skill_id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid skill row id")
+    row = db.query(UserSkill).filter(UserSkill.id == row_id, UserSkill.user_id == user.id).one_or_none()
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Skill row not found")
+    db.delete(row)
+    db.commit()
+    return {"ok": True}
+
+
+@router.get("/employee/self-assessment")
+def get_self_assessment(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> list[dict]:
+    if user.role != UserRole.employee:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    profile = _employee_profile_or_404(db, user.id)
+    ai = profile.ai_profile or {}
+    return list(ai.get("self_assessments") or [])
+
+
+@router.post("/employee/self-assessment")
+def submit_self_assessment(
+    payload: dict,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    if user.role != UserRole.employee:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    skill = str(payload.get("skill") or "").strip().lower()
+    self_score = int(payload.get("self_score") or 0)
+    confidence = int(payload.get("confidence") or 0)
+    years = float(payload.get("years") or 0)
+    if not skill or self_score < 1 or self_score > 5:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid self assessment input")
+    manager_score = int(payload.get("manager_score") or self_score)
+    final_skill_score = round((self_score + manager_score) / 2, 2)
+    profile = _employee_profile_or_404(db, user.id)
+    ai = dict(profile.ai_profile or {})
+    assessments = list(ai.get("self_assessments") or [])
+    assessments = [a for a in assessments if a.get("skill") != skill]
+    assessments.append(
+        {
+            "skill": skill,
+            "self_score": self_score,
+            "confidence": confidence,
+            "experience_years": years,
+            "manager_score": manager_score,
+            "final_skill_score": final_skill_score,
+            "submitted_at": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+    ai["self_assessments"] = assessments
+    profile.ai_profile = ai
+    db.add(profile)
+    db.commit()
+    return {"ok": True, "final_skill_score": final_skill_score}
+
+
+@router.get("/employee/training-recommendations")
+def training_recommendations(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> list[dict]:
+    if user.role != UserRole.employee:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    profile = _employee_profile_or_404(db, user.id)
+    cv_extract = profile.cv_extract or {}
+    cv_skills = {str(s).strip().lower() for s in (cv_extract.get("skills") or []) if str(s).strip()}
+    cert_text = " ".join([str(c) for c in (cv_extract.get("certifications") or [])]).lower()
+    source_weight = {"manager": 1.0, "cv": 0.9, "ai": 0.75, "self": 0.65}
+    skill_source_map = {}
+    rows = (
+        db.query(Skill.name, UserSkill.source)
+        .join(UserSkill, Skill.id == UserSkill.skill_id)
+        .filter(UserSkill.user_id == user.id)
+        .all()
+    )
+    for name, source in rows:
+        skill_source_map[str(name).strip().lower()] = str(source.value if hasattr(source, "value") else source)
+    gaps_payload = my_skill_gaps(db=db, user=user)
+    recs = []
+    for g in gaps_payload.get("gaps", []):
+        if g.get("gap", 0) <= 0:
+            continue
+        skill = str(g.get("skill") or "").strip().lower()
+        gap = float(g.get("gap") or 0)
+        source = skill_source_map.get(skill, "self")
+        evidence_confidence = source_weight.get(source, 0.65)
+        cert_relevance = 1.0 if skill and skill in cert_text else 0.0
+        cv_relevance = 1.0 if skill in cv_skills else 0.0
+        projected_gap_reduction_pct = round(min(95.0, 35 + (gap * 18) + (cert_relevance * 12) + (cv_relevance * 8)), 1)
+        overall = (0.55 * evidence_confidence) + (0.25 * cv_relevance) + (0.2 * cert_relevance)
+        match_pct = round(min(99.0, 60 + gap * 7 + overall * 18), 1)
+        rationale = []
+        rationale.append(f"Gap {gap:.1f} in {skill}.")
+        rationale.append(f"Evidence source: {source}.")
+        if cv_relevance:
+            rationale.append("Skill found in CV.")
+        if cert_relevance:
+            rationale.append("Relevant certification detected.")
+        recs.append(
+            {
+                "course": f"{skill.title()} Intensive",
+                "skill": skill,
+                "match_pct": match_pct,
+                "mode": "Online",
+                "certification": True,
+                "duration_weeks": int(max(2, round(gap * 2))),
+                "evidence_confidence_pct": round(evidence_confidence * 100, 1),
+                "cert_relevance_pct": round(cert_relevance * 100, 1),
+                "cv_relevance_pct": round(cv_relevance * 100, 1),
+                "projected_gap_reduction_pct": projected_gap_reduction_pct,
+                "rationale": " ".join(rationale),
+            }
+        )
+    recs.sort(key=lambda x: x["match_pct"], reverse=True)
+    return recs[:20]
+
+
+@router.get("/employee/training-progress")
+def training_progress(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    if user.role != UserRole.employee:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    refresh_stale_training_sessions(db, user.id)
+    rows = (
+        db.query(HrAction)
+        .filter(HrAction.target_user_id == user.id, HrAction.action_type == "training_assign")
+        .order_by(HrAction.updated_at.desc())
+        .all()
+    )
+    active, completed = [], []
+    for r in rows:
+        item = training_assignment_to_progress_item(r)
+        if r.status == "completed":
+            completed.append(item)
+        elif r.status == "cancelled":
+            continue
+        else:
+            active.append(item)
+    return {"active_courses": active, "completed_courses": completed}
+
+
+@router.patch("/employee/training-assignments/{action_id}", response_model=HrActionPublic)
+def employee_update_training_assignment(
+    action_id: uuid.UUID,
+    body: TrainingAssignmentProgressUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> HrAction:
+    if user.role != UserRole.employee:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    action = db.query(HrAction).filter(HrAction.id == action_id).one_or_none()
+    if not action or action.action_type != "training_assign" or action.target_user_id != user.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Training assignment not found")
+    try:
+        return apply_training_assignment_update(
+            db,
+            action,
+            body,
+            skill_source_on_complete=SkillSource.self,
+            require_active_session_for_progress_change=True,
+            require_minimum_verified_time_to_complete=True,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.post("/employee/training-assignments/{action_id}/material-progress", response_model=HrActionPublic)
+def employee_training_material_progress(
+    action_id: uuid.UUID,
+    body: MaterialReadingProgressUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> HrAction:
+    if user.role != UserRole.employee:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    action = db.query(HrAction).filter(HrAction.id == action_id).one_or_none()
+    if not action or action.action_type != "training_assign" or action.target_user_id != user.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Training assignment not found")
+    try:
+        return apply_material_reading_progress(db, action, body)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.get("/employee/training-assignments/{action_id}/course-material")
+def employee_download_training_course_material(
+    action_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> FileResponse:
+    if user.role != UserRole.employee:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    action = db.query(HrAction).filter(HrAction.id == action_id).one_or_none()
+    if not action or action.action_type != "training_assign" or action.target_user_id != user.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Training assignment not found")
+    upload_root = os.path.join(os.getcwd(), "uploads")
+    path, fname, media_type = get_material_download_path(action, upload_root)
+    return FileResponse(path, filename=fname, media_type=media_type)
+
+
+@router.post("/employee/training-assignments/{action_id}/session/start", response_model=HrActionPublic)
+def employee_start_training_session(
+    action_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> HrAction:
+    if user.role != UserRole.employee:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    action = db.query(HrAction).filter(HrAction.id == action_id).one_or_none()
+    if not action or action.action_type != "training_assign" or action.target_user_id != user.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Training assignment not found")
+    try:
+        return start_training_session(db, action)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.post("/employee/training-assignments/{action_id}/session/end", response_model=HrActionPublic)
+def employee_end_training_session(
+    action_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> HrAction:
+    if user.role != UserRole.employee:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    action = db.query(HrAction).filter(HrAction.id == action_id).one_or_none()
+    if not action or action.action_type != "training_assign" or action.target_user_id != user.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Training assignment not found")
+    try:
+        return end_training_session(db, action)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.post("/employee/training-assignments/{action_id}/heartbeat", response_model=HrActionPublic)
+def employee_training_session_heartbeat(
+    action_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> HrAction:
+    if user.role != UserRole.employee:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    action = db.query(HrAction).filter(HrAction.id == action_id).one_or_none()
+    if not action or action.action_type != "training_assign" or action.target_user_id != user.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Training assignment not found")
+    try:
+        return training_session_heartbeat(db, action)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.post("/employee/training-enroll")
+def training_enroll(
+    payload: dict,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    if user.role != UserRole.employee:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    course = str(payload.get("course") or "").strip()
+    skill = str(payload.get("skill") or "").strip().lower()
+    if not course or not skill:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="course and skill are required")
+    existing = (
+        db.query(HrAction)
+        .filter(
+            HrAction.target_user_id == user.id,
+            HrAction.action_type == "training_assign",
+            HrAction.status.in_(["assigned", "in_progress"]),
+        )
+        .all()
+    )
+    for row in existing:
+        payload_row = row.payload or {}
+        if str(payload_row.get("program_name") or "").strip().lower() == course.lower():
+            return {"ok": True, "message": "Already enrolled"}
+    now_iso = datetime.now(timezone.utc).isoformat()
+    action = HrAction(
+        target_user_id=user.id,
+        created_by_id=user.id,
+        action_type="training_assign",
+        status="in_progress",
+        note="Self-enrolled from employee recommendations",
+        payload=ensure_training_attendance_defaults(
+            {
+                "program_name": course,
+                "target_skill": skill,
+                "source": "employee_recommendation",
+                "progress_pct": 0,
+                "started_at": now_iso,
+            }
+        ),
+    )
+    db.add(action)
+    db.commit()
+    return {"ok": True}
+
+
+@router.get("/employee/career-paths")
+def career_paths(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> list[dict]:
+    if user.role != UserRole.employee:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    current = {
+        n.lower(): int(l)
+        for (n, l) in db.query(Skill.name, UserSkill.level)
+        .join(UserSkill, Skill.id == UserSkill.skill_id)
+        .filter(UserSkill.user_id == user.id)
+        .all()
+    }
+    roles = [
+        ("Backend Developer", {"python": 4, "sql": 3, "docker": 2}),
+        ("AI Engineer", {"python": 4, "machine learning": 4, "sql": 3}),
+        ("DevOps Engineer", {"docker": 4, "git": 3, "communication": 2}),
+    ]
+    out = []
+    for role, required in roles:
+        matched = sum(min(current.get(k, 0), v) for k, v in required.items())
+        total = sum(required.values())
+        out.append(
+            {
+                "role": role,
+                "career_match_pct": round((matched / max(1, total)) * 100, 1),
+                "required_skills": required,
+            }
+        )
+    out.sort(key=lambda x: x["career_match_pct"], reverse=True)
+    return out
+
+
+@router.get("/employee/goals")
+def get_goals(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> list[dict]:
+    if user.role != UserRole.employee:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    profile = _employee_profile_or_404(db, user.id)
+    return list((profile.ai_profile or {}).get("employee_goals") or [])
+
+
+@router.post("/employee/goals")
+def save_goal(
+    payload: dict,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    if user.role != UserRole.employee:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    title = str(payload.get("title") or "").strip()
+    status_value = str(payload.get("status") or "Not started")
+    if not title:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Goal title required")
+    profile = _employee_profile_or_404(db, user.id)
+    ai = dict(profile.ai_profile or {})
+    goals = list(ai.get("employee_goals") or [])
+    goals = [g for g in goals if g.get("title") != title]
+    goals.append({"title": title, "status": status_value, "updated_at": datetime.now(timezone.utc).isoformat()})
+    ai["employee_goals"] = goals
+    profile.ai_profile = ai
+    db.add(profile)
+    db.commit()
+    return {"ok": True}
+
+
+@router.get("/employee/notifications")
+def notifications(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> list[dict]:
+    if user.role != UserRole.employee:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    profile = _employee_profile_or_404(db, user.id)
+    ai = dict(profile.ai_profile or {})
+    saved = list(ai.get("employee_notifications") or [])
+    if saved:
+        return saved
+    generated = []
+    for g in my_skill_gaps(db=db, user=user).get("gaps", []):
+        if g.get("gap", 0) > 1:
+            generated.append(
+                {
+                    "type": "skill_gap_warning",
+                    "message": f"Gap detected in {g['skill']} (gap {g['gap']}).",
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+    generated.append(
+        {
+            "type": "training_available",
+            "message": "New training recommendations are available for your profile.",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+    assigned_rows = (
+        db.query(ProjectAssignment, ManagerProject)
+        .join(ManagerProject, ManagerProject.id == ProjectAssignment.project_id)
+        .filter(
+            ProjectAssignment.employee_id == user.id,
+            ManagerProject.status.in_([ProjectStatus.active, ProjectStatus.draft]),
+        )
+        .all()
+    )
+    today = datetime.now(timezone.utc).date()
+    for assignment, project in assigned_rows:
+        latest = (
+            db.query(EmployeeProjectDailyReport.work_date)
+            .filter(
+                EmployeeProjectDailyReport.project_id == assignment.project_id,
+                EmployeeProjectDailyReport.employee_id == user.id,
+            )
+            .order_by(EmployeeProjectDailyReport.work_date.desc())
+            .first()
+        )
+        if not latest:
+            generated.append(
+                {
+                    "type": "daily_report_due",
+                    "message": f"Submit your first daily report for project '{project.name}'.",
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+            continue
+        days_since = (today - latest[0]).days
+        if days_since >= 2:
+            generated.append(
+                {
+                    "type": "daily_report_overdue",
+                    "message": f"Daily report overdue for project '{project.name}' ({days_since} day(s) since last report).",
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+    ai["employee_notifications"] = generated[:20]
+    profile.ai_profile = ai
+    db.add(profile)
+    db.commit()
+    return generated[:20]

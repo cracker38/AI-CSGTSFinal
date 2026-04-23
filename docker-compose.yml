@@ -1,0 +1,15 @@
+services:
+  db:
+    image: postgres:16
+    container_name: aicsgts_postgres
+    environment:
+      POSTGRES_DB: aicsgts
+      POSTGRES_USER: aicsgts
+      POSTGRES_PASSWORD: aicsgts_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - aicsgts_pgdata:/var/lib/postgresql/data
+
+volumes:
+  aicsgts_pgdata:
