@@ -62,8 +62,11 @@ def create_app() -> FastAPI:
         if full_path.startswith(settings.api_v1_prefix.lstrip("/")):
             raise HTTPException(status_code=404, detail="Not Found")
 
-        # If a direct static file path was requested and not found, return 404.
+        # Serve root-level static files (e.g. favicon.svg) directly when present.
         if "." in Path(full_path).name:
+            requested_file = static_dir / full_path
+            if requested_file.exists() and requested_file.is_file():
+                return FileResponse(requested_file)
             raise HTTPException(status_code=404, detail="Not Found")
 
         index_file = static_dir / "index.html"
