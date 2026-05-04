@@ -84,8 +84,10 @@ export default function LoginPage() {
       const msg = getApiErrorMessage(err, "Login failed");
       const extra =
         err?.response?.status === 401
-          ? " Confirm email/password. Start the API (uvicorn) and match the Vite proxy port in vite.config.js (often 8010 or 8888). Pending employees see 403 until approved."
-          : "";
+          ? " Check your email/password. If your account is pending approval, contact your HR admin."
+          : err?.response?.status === 0 || !err?.response
+            ? " Server is unreachable right now. Please try again in a moment."
+            : "";
       setError(msg + extra);
     } finally {
       setBusy(false);
