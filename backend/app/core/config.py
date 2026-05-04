@@ -35,6 +35,8 @@ class Settings(BaseSettings):
     smtp_use_ssl: bool = False
     smtp_timeout_seconds: int = 20
     smtp_from_email: str = "no-reply@aicsgts.local"
+    resend_api_key: str = ""
+    resend_from_email: str = ""
     otp_expire_minutes: int = 10
     login_require_otp: bool = True
 

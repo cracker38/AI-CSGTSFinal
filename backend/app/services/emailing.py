@@ -4,17 +4,12 @@ import smtplib
 from email.message import EmailMessage
 from email.utils import formataddr
 
+import httpx
+
 from app.core.config import settings
 
 
-def send_login_otp_email(*, to_email: str, otp_code: str) -> None:
-    if not settings.smtp_host:
-        raise RuntimeError("SMTP is not configured. Set SMTP_HOST and related variables in backend/.env.")
-    if not settings.smtp_from_email:
-        raise RuntimeError("SMTP_FROM_EMAIL is required for OTP delivery.")
-    if settings.smtp_use_ssl and settings.smtp_use_tls:
-        raise RuntimeError("Choose one SMTP mode: either SMTP_USE_SSL=true or SMTP_USE_TLS=true, not both.")
-
+def _build_login_otp_email(*, to_email: str, otp_code: str) -> EmailMessage:
     msg = EmailMessage()
     msg["Subject"] = "Your AI-CSGTS Login OTP Code"
     msg["From"] = formataddr(("AI-CSGTS", settings.smtp_from_email))
@@ -97,6 +92,61 @@ def send_login_otp_email(*, to_email: str, otp_code: str) -> None:
 """,
         subtype="html",
     )
+    return msg
+
+
+def _send_via_resend(*, to_email: str, otp_code: str) -> None:
+    from_email = settings.resend_from_email.strip() or settings.smtp_from_email.strip()
+    if not from_email:
+        raise RuntimeError("RESEND_FROM_EMAIL or SMTP_FROM_EMAIL is required when RESEND_API_KEY is set.")
+
+    html_body = f"""\
+<!DOCTYPE html>
+<html lang="en">
+  <body style="font-family:Arial,sans-serif;background:#eef3fb;padding:16px;">
+    <div style="max-width:620px;background:#fff;border:1px solid #dfe7f2;border-radius:14px;padding:20px;margin:auto;">
+      <h2 style="margin:0 0 12px;color:#0d47a1;">AI-CSGTS Login Verification</h2>
+      <p>Use this one-time password to complete your sign-in:</p>
+      <p style="font-size:32px;letter-spacing:8px;font-weight:700;color:#0d47a1;margin:12px 0;">{otp_code}</p>
+      <p>This code expires in {settings.otp_expire_minutes} minutes.</p>
+      <p>If you did not request this login, ignore this email.</p>
+    </div>
+  </body>
+</html>
+"""
+    text_body = "\n".join(
+        [
+            "AI-CSGTS Secure Login Verification",
+            "",
+            "Use the OTP below to complete your sign-in:",
+            f"OTP: {otp_code}",
+            "",
+            f"This code expires in {settings.otp_expire_minutes} minutes.",
+            "If you did not request this login, ignore this email.",
+        ]
+    )
+
+    payload = {
+        "from": f"AI-CSGTS <{from_email}>",
+        "to": [to_email],
+        "subject": "Your AI-CSGTS Login OTP Code",
+        "text": text_body,
+        "html": html_body,
+    }
+    headers = {"Authorization": f"Bearer {settings.resend_api_key}", "Content-Type": "application/json"}
+    with httpx.Client(timeout=settings.smtp_timeout_seconds) as client:
+        resp = client.post("https://api.resend.com/emails", headers=headers, json=payload)
+        if resp.status_code >= 300:
+            raise RuntimeError(f"Resend email API error ({resp.status_code}): {resp.text}")
+
+
+def _send_via_smtp(msg: EmailMessage) -> None:
+    if not settings.smtp_host:
+        raise RuntimeError("SMTP is not configured. Set SMTP_HOST and related variables.")
+    if not settings.smtp_from_email:
+        raise RuntimeError("SMTP_FROM_EMAIL is required for OTP delivery.")
+    if settings.smtp_use_ssl and settings.smtp_use_tls:
+        raise RuntimeError("Choose one SMTP mode: either SMTP_USE_SSL=true or SMTP_USE_TLS=true, not both.")
 
     if settings.smtp_use_ssl:
         with smtplib.SMTP_SSL(settings.smtp_host, settings.smtp_port, timeout=settings.smtp_timeout_seconds) as server:
@@ -113,3 +163,11 @@ def send_login_otp_email(*, to_email: str, otp_code: str) -> None:
         if settings.smtp_username:
             server.login(settings.smtp_username, settings.smtp_password)
         server.send_message(msg)
+
+
+def send_login_otp_email(*, to_email: str, otp_code: str) -> None:
+    if settings.resend_api_key.strip():
+        _send_via_resend(to_email=to_email, otp_code=otp_code)
+        return
+    msg = _build_login_otp_email(to_email=to_email, otp_code=otp_code)
+    _send_via_smtp(msg)
