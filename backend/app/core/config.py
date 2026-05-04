@@ -25,7 +25,7 @@ class Settings(BaseSettings):
 
     cors_origins: str = "http://localhost:5173"
 
-    default_system_admin_email: str = "shema@gmail.com"
+    default_system_admin_email: str = "it.elias38@gmail.com"
     default_system_admin_password: str = "Shema@123"
     smtp_host: str = ""
     smtp_port: int = 587
