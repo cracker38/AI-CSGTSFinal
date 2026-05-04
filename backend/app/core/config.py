@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     smtp_timeout_seconds: int = 20
     smtp_from_email: str = "no-reply@aicsgts.local"
     otp_expire_minutes: int = 10
+    login_require_otp: bool = True
 
     # Training: heartbeat gap (seconds) before an open learning session auto-pauses.
     training_stale_heartbeat_seconds: int = 30 * 60

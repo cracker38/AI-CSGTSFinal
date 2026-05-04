@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
+from app.core.config import settings
 from app.core.security import create_access_token
 from app.db.session import get_db
 from app.models.user import AccountStatus, User
@@ -75,6 +76,24 @@ def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
     if user.status != AccountStatus.active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account not active")
+
+    if not settings.login_require_otp:
+        token = create_access_token(subject=str(user.id), role=user.role.value)
+        write_audit_log(
+            db,
+            request=request,
+            actor_user_id=user.id,
+            action="auth.login",
+            entity_type="user",
+            entity_id=str(user.id),
+            meta={"role": user.role.value, "otp_bypassed": True},
+        )
+        return LoginResponse(
+            access_token=token,
+            role=user.role.value,
+            must_change_password=user.must_change_password,
+            requires_otp=False,
+        )
 
     return _send_login_otp(db, user=user, request=request, action="auth.login_otp_sent")
 
