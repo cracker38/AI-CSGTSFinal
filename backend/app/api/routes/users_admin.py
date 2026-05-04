@@ -23,7 +23,7 @@ class CreatePrivilegedUserRequest(BaseModel):
     full_name: str = Field(min_length=2, max_length=200)
     email: EmailStr
     temporary_password: str = Field(min_length=8, max_length=200)
-    role: str = Field(pattern="^(hr_admin|manager|executive)$")
+    role: str = Field(pattern="^(hr_admin|manager)$")
 
 
 class UpdateUserStatusRequest(BaseModel):
@@ -81,7 +81,7 @@ def list_user_records(
     role: str | None = Query(default=None),
     status_filter: str | None = Query(default=None, alias="status"),
 ) -> list[UserPublic]:
-    # HR Admin: workforce directory = employees who self-registered only (not managers/HR/executives).
+    # HR Admin: workforce directory = employees who self-registered only (not managers/HR/system admins).
     query = db.query(User).filter(User.role != UserRole.system_admin)
     if actor.role == UserRole.hr_admin:
         query = query.filter(User.role == UserRole.employee)

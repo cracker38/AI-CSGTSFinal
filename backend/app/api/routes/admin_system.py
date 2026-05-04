@@ -72,7 +72,6 @@ def roles_permissions(
         "employee": ["self_profile", "self_skills", "self_assessment", "self_gaps", "training_recs", "goals", "notifications"],
         "manager": ["team_directory", "team_gaps", "approvals", "team_projects", "availability", "alerts"],
         "hr_admin": ["org_records", "org_gaps", "training_planning", "budget", "compliance", "recruitment_insights", "cv_validation"],
-        "executive": ["kpis", "skill_health", "forecasting", "roi", "risk", "strategic_recommendations"],
         "system_admin": ["user_management", "role_control", "system_config", "integrations", "audit_logs", "import_export", "health", "backup"],
     }
     return {"matrix": matrix}

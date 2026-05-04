@@ -89,7 +89,6 @@ function navItemsForRole(role) {
   if (canAccessRoleRoute(role, "employee")) items.push({ label: "Employee Dashboard", to: "/app/employee" });
   if (canAccessRoleRoute(role, "manager")) items.push({ label: "Manager Dashboard", to: "/app/manager" });
   if (canAccessRoleRoute(role, "hr")) items.push({ label: "HR Dashboard", to: "/app/hr" });
-  if (canAccessRoleRoute(role, "executive")) items.push({ label: "Executive Dashboard", to: "/app/executive" });
   if (canAccessRoleRoute(role, "admin")) items.push({ label: "Admin Dashboard", to: "/app/admin" });
   items.push({ label: "Home", to: "/app", match: "/app" });
   return items;
@@ -109,11 +108,51 @@ export default function AppShell({ title, children }) {
   const navContent = (
     <>
       <Toolbar />
-      <List sx={{ py: 0 }}>
+      <Box sx={{ px: 2, pb: 1 }}>
+        <Box
+          sx={{
+            borderRadius: 2.5,
+            p: 1.5,
+            border: "1px solid",
+            borderColor: "divider",
+            background: "linear-gradient(135deg, rgba(25,118,210,0.12) 0%, rgba(46,125,50,0.10) 100%)"
+          }}
+        >
+          <Typography variant="caption" sx={{ color: "text.secondary", letterSpacing: "0.08em" }}>
+            AI-CSGTS
+          </Typography>
+          <Typography variant="subtitle2" fontWeight={800}>
+            Navigation
+          </Typography>
+        </Box>
+      </Box>
+      <List sx={{ py: 0, px: 1.2 }}>
         {items.map((it) => (
           <ListItemButton
             key={`${it.label}|${it.match || it.to}`}
             selected={it.match ? `${location.pathname}${location.search}` === it.match : location.pathname === it.to}
+            sx={{
+              borderRadius: 2,
+              mb: 0.5,
+              px: 1.5,
+              py: 0.9,
+              border: "1px solid transparent",
+              "&:hover": {
+                bgcolor: "action.hover"
+              },
+              "&.Mui-selected": {
+                bgcolor: "primary.main",
+                color: "primary.contrastText",
+                borderColor: "primary.main",
+                boxShadow: "0 6px 16px rgba(27,94,32,0.24)",
+                "& .MuiListItemText-primary": {
+                  fontWeight: 700
+                },
+                "&:hover": {
+                  bgcolor: "primary.dark"
+                }
+              }
+            }}
             onClick={() => {
               navigate(it.to);
               setMobileOpen(false);
@@ -173,7 +212,11 @@ export default function AppShell({ title, children }) {
                 onClose={() => setMobileOpen(false)}
                 ModalProps={{ keepMounted: true }}
                 sx={{
-                  "& .MuiDrawer-paper": { width: drawerWidth, boxSizing: "border-box" }
+                  "& .MuiDrawer-paper": {
+                    width: drawerWidth,
+                    boxSizing: "border-box",
+                    borderRadius: 9
+                  }
                 }}
               >
                 {navContent}
@@ -188,7 +231,10 @@ export default function AppShell({ title, children }) {
                     width: drawerWidth,
                     boxSizing: "border-box",
                     borderRight: "1px solid",
-                    borderColor: "divider"
+                    borderColor: "divider",
+                    borderTopRightRadius: 18,
+                    borderBottomRightRadius: 18,
+                    overflow: "hidden"
                   }
                 }}
               >

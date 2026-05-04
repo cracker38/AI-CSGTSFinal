@@ -32,7 +32,7 @@ def _required_skills_for_user(user: User) -> dict[str, int]:
 @router.get("/org/skills/distribution")
 def org_skill_distribution(
     db: Session = Depends(get_db),
-    _: User = Depends(require_roles(UserRole.hr_admin, UserRole.executive)),
+    _: User = Depends(require_roles(UserRole.hr_admin, UserRole.system_admin)),
 ) -> dict:
     rows = (
         db.query(Skill.name, func.count(UserSkill.id))
@@ -50,7 +50,7 @@ def org_skill_distribution(
 @router.get("/org/skill-gaps/top")
 def org_top_skill_gaps(
     db: Session = Depends(get_db),
-    _: User = Depends(require_roles(UserRole.hr_admin, UserRole.executive)),
+    _: User = Depends(require_roles(UserRole.hr_admin, UserRole.system_admin)),
 ) -> dict:
     # Aggregate numeric gaps across employees based on deterministic required-profile rules.
     users = db.query(User).filter(User.status == AccountStatus.active, User.role == UserRole.employee).all()
@@ -84,7 +84,7 @@ def org_top_skill_gaps(
 @router.get("/org/kpis")
 def org_kpis(
     db: Session = Depends(get_db),
-    _: User = Depends(require_roles(UserRole.hr_admin, UserRole.executive)),
+    _: User = Depends(require_roles(UserRole.hr_admin, UserRole.system_admin)),
 ) -> dict:
     total_users = db.query(func.count(User.id)).scalar() or 0
     pending = db.query(func.count(User.id)).filter(User.status == AccountStatus.pending_approval).scalar() or 0

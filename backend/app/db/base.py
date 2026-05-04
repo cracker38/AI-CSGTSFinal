@@ -4,6 +4,7 @@ from app.models.cv_document import CvDocument  # noqa: F401
 from app.models.hr_action import HrAction  # noqa: F401
 from app.models.employee_profile import EmployeeProfile  # noqa: F401
 from app.models.integration import Integration  # noqa: F401
+from app.models.login_otp import LoginOtp  # noqa: F401
 from app.models.manager_project import (  # noqa: F401
     ManagerProject,
     ProjectAssignment,

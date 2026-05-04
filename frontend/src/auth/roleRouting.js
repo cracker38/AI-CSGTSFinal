@@ -6,8 +6,6 @@ export function dashboardPathForRole(role) {
       return "/app/manager";
     case "hr_admin":
       return "/app/hr";
-    case "executive":
-      return "/app/executive";
     case "system_admin":
       return "/app/admin";
     default:
@@ -22,7 +20,6 @@ export function canAccessRoleRoute(userRole, routeRole) {
   if (routeRole === "admin") return userRole === "system_admin";
   if (routeRole === "hr") return userRole === "hr_admin";
   if (routeRole === "manager") return userRole === "manager";
-  if (routeRole === "executive") return userRole === "executive";
   if (routeRole === "employee") return userRole === "employee";
   return false;
 }

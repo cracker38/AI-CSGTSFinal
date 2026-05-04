@@ -11,7 +11,6 @@ const EmployeeDashboard = lazy(() => import("./pages/EmployeeDashboard"));
 const HrDashboard = lazy(() => import("./pages/HrDashboard"));
 const ManagerDashboard = lazy(() => import("./pages/ManagerDashboard"));
 const AdminDashboard = lazy(() => import("./pages/AdminDashboard"));
-const ExecutiveDashboard = lazy(() => import("./pages/ExecutiveDashboard"));
 
 function RouteLoader() {
   return (
@@ -54,9 +53,6 @@ export default function App() {
           </Route>
           <Route element={<RequireRole role="hr" />}>
             <Route path="/app/hr" element={<HrDashboard />} />
-          </Route>
-          <Route element={<RequireRole role="executive" />}>
-            <Route path="/app/executive" element={<ExecutiveDashboard />} />
           </Route>
           <Route element={<RequireRole role="admin" />}>
             <Route path="/app/admin" element={<AdminDashboard />} />

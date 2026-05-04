@@ -23,7 +23,37 @@ function Root() {
           primary: { main: "#1b5e20" },
           secondary: { main: "#0d47a1" }
         },
-        shape: { borderRadius: 12 }
+        shape: { borderRadius: 12 },
+        components: {
+          MuiCssBaseline: {
+            styleOverrides: {
+              body: { overflowX: "hidden" },
+              "#root": { overflowX: "hidden" }
+            }
+          },
+          MuiTableContainer: {
+            styleOverrides: {
+              root: { overflowX: "hidden" }
+            }
+          },
+          MuiTable: {
+            styleOverrides: {
+              root: {
+                width: "100%",
+                tableLayout: "fixed"
+              }
+            }
+          },
+          MuiTableCell: {
+            styleOverrides: {
+              root: {
+                whiteSpace: "normal",
+                overflowWrap: "anywhere",
+                wordBreak: "break-word"
+              }
+            }
+          }
+        }
       }),
     [mode]
   );

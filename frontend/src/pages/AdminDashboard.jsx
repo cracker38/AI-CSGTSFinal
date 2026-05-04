@@ -19,6 +19,7 @@ import {
   IconButton,
   LinearProgress,
   MenuItem,
+  Menu,
   Snackbar,
   Stack,
   Switch,
@@ -32,9 +33,12 @@ import {
   TableSortLabel,
   TextField,
   Tooltip,
-  Typography
+  Typography,
+  useMediaQuery,
+  useTheme
 } from "@mui/material";
 import RefreshIcon from "@mui/icons-material/Refresh";
+import MoreVertIcon from "@mui/icons-material/MoreVert";
 import { useSearchParams } from "react-router-dom";
 import AppShell from "../components/AppShell";
 import { api } from "../api/client";
@@ -55,6 +59,9 @@ const SECTIONS = [
 ];
 
 export default function AdminDashboard() {
+  const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down("md"));
+  const isSmallMobile = useMediaQuery(theme.breakpoints.down("sm"));
   const exportRef = useRef(null);
   const [searchParams, setSearchParams] = useSearchParams();
   const [activeSection, setActiveSection] = useState("users");
@@ -99,6 +106,10 @@ export default function AdminDashboard() {
   const [selectedUserIds, setSelectedUserIds] = useState([]);
   const [sortBy, setSortBy] = useState("created_at");
   const [sortOrder, setSortOrder] = useState("desc");
+  const [rowMenuAnchorEl, setRowMenuAnchorEl] = useState(null);
+  const [rowMenuUser, setRowMenuUser] = useState(null);
+  const [rowMenuPosition, setRowMenuPosition] = useState(null);
+  const exportUsersCsvUrl = `${api.defaults.baseURL}/admin/system/export/users.csv`;
 
   const kpis = useMemo(
     () => [
@@ -288,6 +299,22 @@ export default function AdminDashboard() {
     setSortOrder("asc");
   }
 
+  function openRowMenu(event, user) {
+    event.preventDefault();
+    setRowMenuAnchorEl(event.currentTarget);
+    setRowMenuUser(user);
+    setRowMenuPosition({
+      top: event.clientY + 6,
+      left: event.clientX - 6
+    });
+  }
+
+  function closeRowMenu() {
+    setRowMenuAnchorEl(null);
+    setRowMenuUser(null);
+    setRowMenuPosition(null);
+  }
+
   async function addCatalogValue(endpoint, name, clearFn) {
     if (!name.trim()) return;
     setError("");
@@ -369,8 +396,8 @@ export default function AdminDashboard() {
 
   function SectionPanel({ children }) {
     return (
-      <Card variant="outlined">
-        <CardContent>{children}</CardContent>
+      <Card variant="outlined" sx={{ borderRadius: 3, borderColor: "divider", boxShadow: "0 8px 22px rgba(0,0,0,0.06)" }}>
+        <CardContent sx={{ p: { xs: 1.5, sm: 2, md: 2.5 } }}>{children}</CardContent>
       </Card>
     );
   }
@@ -381,15 +408,81 @@ export default function AdminDashboard() {
         {loading ? <LinearProgress /> : null}
         {error ? <Alert severity="error">{error}</Alert> : null}
 
+        <Card
+          variant="outlined"
+          sx={{
+            borderRadius: 3,
+            borderColor: "divider",
+            background: "linear-gradient(135deg, rgba(25,118,210,0.10) 0%, rgba(46,125,50,0.08) 100%)"
+          }}
+        >
+          <CardContent>
+            <Stack
+              direction={{ xs: "column", md: "row" }}
+              spacing={1.2}
+              alignItems={{ xs: "flex-start", md: "center" }}
+              justifyContent="space-between"
+            >
+              <Box>
+                <Typography variant="h5" fontWeight={800}>System Admin Control Center</Typography>
+                <Typography variant="body2" color="text.secondary">
+                  Monitor platform health, manage users, configure integrations, and govern core data.
+                </Typography>
+              </Box>
+              <Stack direction={{ xs: "column", sm: "row" }} spacing={1} width={{ xs: "100%", md: "auto" }}>
+                <Button variant="outlined" onClick={load} startIcon={<RefreshIcon />} fullWidth={isMobile}>
+                  Refresh data
+                </Button>
+                <Button
+                  variant="contained"
+                  fullWidth={isMobile}
+                  onClick={() =>
+                    exportElementToPdfLazy(exportRef.current, `admin-${activeSection}.pdf`, {
+                      role: "system_admin",
+                      section: activeSection,
+                      title: "System Admin Dashboard Report"
+                    })
+                  }
+                >
+                  Export PDF
+                </Button>
+              </Stack>
+            </Stack>
+          </CardContent>
+        </Card>
+
         <Grid container spacing={2}>
-          {kpis.map((k) => (
-            <Grid item xs={12} sm={6} md={3} key={k.label}>
-              <Card variant="outlined">
-                <CardContent>
-                  <Typography variant="body2" color="text.secondary">
+          {kpis.map((k, idx) => (
+            <Grid item xs={12} sm={6} md={4} lg={2.4} key={k.label}>
+              <Card
+                variant="outlined"
+                sx={{
+                  borderRadius: 3,
+                  borderColor: "divider",
+                  height: "100%",
+                  position: "relative",
+                  overflow: "hidden",
+                  background:
+                    idx % 2 === 0
+                      ? "linear-gradient(145deg, rgba(25,118,210,0.08) 0%, rgba(255,255,255,0.02) 100%)"
+                      : "linear-gradient(145deg, rgba(46,125,50,0.08) 0%, rgba(255,255,255,0.02) 100%)"
+                }}
+              >
+                <Box
+                  sx={{
+                    position: "absolute",
+                    top: 0,
+                    left: 0,
+                    height: 4,
+                    width: "100%",
+                    bgcolor: idx % 2 === 0 ? "secondary.main" : "primary.main"
+                  }}
+                />
+                <CardContent sx={{ pt: 2 }}>
+                  <Typography variant="body2" color="text.secondary" sx={{ mb: 0.4 }}>
                     {k.label}
                   </Typography>
-                  <Typography variant="h4" fontWeight={900}>
+                  <Typography variant="h4" fontWeight={900} sx={{ fontSize: { xs: "1.8rem", md: "2.1rem" } }}>
                     {k.value}
                   </Typography>
                 </CardContent>
@@ -481,12 +574,11 @@ export default function AdminDashboard() {
                         >
                           <option value="hr_admin">HR Admin</option>
                           <option value="manager">Manager</option>
-                          <option value="executive">Executive</option>
                         </TextField>
                       </Grid>
                     </Grid>
                     <Stack direction="row" justifyContent="flex-end">
-                      <Button type="submit" variant="contained" disabled={creating}>
+                      <Button type="submit" variant="contained" disabled={creating} fullWidth={isMobile}>
                         {creating ? "Creating..." : "Create user"}
                       </Button>
                     </Stack>
@@ -500,6 +592,26 @@ export default function AdminDashboard() {
                   <Divider sx={{ my: 2 }} />
                   {pending.length === 0 ? (
                     <Alert severity="info">No pending approvals.</Alert>
+                  ) : isMobile ? (
+                    <Stack spacing={1.2}>
+                      {pending.map((u) => (
+                        <Card key={u.id} variant="outlined" sx={{ borderRadius: 2 }}>
+                          <CardContent sx={{ "&:last-child": { pb: 2 } }}>
+                            <Stack spacing={0.9}>
+                              <Typography fontWeight={700}>{u.full_name}</Typography>
+                              <Typography variant="body2" color="text.secondary">{u.email}</Typography>
+                              <Stack direction="row" flexWrap="wrap" gap={0.8}>
+                                <Chip size="small" label={u.department} />
+                                <Chip size="small" variant="outlined" label={u.job_title} />
+                              </Stack>
+                              <Button size="small" variant="contained" onClick={() => approve(u.id)}>
+                                Approve
+                              </Button>
+                            </Stack>
+                          </CardContent>
+                        </Card>
+                      ))}
+                    </Stack>
                   ) : (
                     <>
                       <TableContainer>
@@ -551,54 +663,67 @@ export default function AdminDashboard() {
                 </SectionPanel>
 
                 <SectionPanel>
-                  <Typography variant="h6" fontWeight={800}>
-                    User directory & management
-                  </Typography>
-                  <Typography variant="body2" color="text.secondary">
-                    View all users, activate/disable accounts, and reset passwords to the default.
-                  </Typography>
-                  <Divider sx={{ my: 2 }} />
-                  <Stack direction={{ xs: "column", md: "row" }} spacing={1} sx={{ mb: 1 }}>
-                    <TextField
-                      size="small"
-                      label="Search users"
-                      value={userSearch}
-                      onChange={(e) => setUserSearch(e.target.value)}
-                      fullWidth
-                    />
-                    <Button variant="outlined" onClick={refreshUsers}>
-                      Search
-                    </Button>
-                    <TextField
-                      select
-                      size="small"
-                      label="Role"
-                      value={roleFilter}
-                      onChange={(e) => setRoleFilter(e.target.value)}
-                      sx={{ minWidth: 150 }}
-                    >
-                      <MenuItem value="all">All</MenuItem>
-                      <MenuItem value="employee">Employee</MenuItem>
-                      <MenuItem value="manager">Manager</MenuItem>
-                      <MenuItem value="hr_admin">HR Admin</MenuItem>
-                      <MenuItem value="executive">Executive</MenuItem>
-                      <MenuItem value="system_admin">System Admin</MenuItem>
-                    </TextField>
-                    <TextField
-                      select
-                      size="small"
-                      label="Status"
-                      value={statusFilter}
-                      onChange={(e) => setStatusFilter(e.target.value)}
-                      sx={{ minWidth: 140 }}
-                    >
-                      <MenuItem value="all">All</MenuItem>
-                      <MenuItem value="active">Active</MenuItem>
-                      <MenuItem value="pending_approval">Pending</MenuItem>
-                      <MenuItem value="disabled">Disabled</MenuItem>
-                    </TextField>
+                  <Stack direction={{ xs: "column", sm: "row" }} justifyContent="space-between" spacing={1}>
+                    <Box>
+                      <Typography variant="h6" fontWeight={800}>
+                        User Directory
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        Manage account status, password policy, and administrative actions.
+                      </Typography>
+                    </Box>
+                    <Chip label={`${filteredUsers.length} users`} color="primary" variant="outlined" />
                   </Stack>
-                  <Stack direction={{ xs: "column", md: "row" }} spacing={1} sx={{ mb: 1 }}>
+                  <Divider sx={{ my: 2 }} />
+                  <Grid container spacing={1.2} sx={{ mb: 1 }}>
+                    <Grid item xs={12} md={5}>
+                      <TextField
+                        size="small"
+                        label="Search users"
+                        placeholder="Name, email, department..."
+                        value={userSearch}
+                        onChange={(e) => setUserSearch(e.target.value)}
+                        fullWidth
+                      />
+                    </Grid>
+                    <Grid item xs={12} sm={6} md={3}>
+                      <TextField
+                        select
+                        size="small"
+                        label="Role"
+                        value={roleFilter}
+                        onChange={(e) => setRoleFilter(e.target.value)}
+                        fullWidth
+                      >
+                        <MenuItem value="all">All</MenuItem>
+                        <MenuItem value="employee">Employee</MenuItem>
+                        <MenuItem value="manager">Manager</MenuItem>
+                        <MenuItem value="hr_admin">HR Admin</MenuItem>
+                        <MenuItem value="system_admin">System Admin</MenuItem>
+                      </TextField>
+                    </Grid>
+                    <Grid item xs={12} sm={6} md={2}>
+                      <TextField
+                        select
+                        size="small"
+                        label="Status"
+                        value={statusFilter}
+                        onChange={(e) => setStatusFilter(e.target.value)}
+                        fullWidth
+                      >
+                        <MenuItem value="all">All</MenuItem>
+                        <MenuItem value="active">Active</MenuItem>
+                        <MenuItem value="pending_approval">Pending</MenuItem>
+                        <MenuItem value="disabled">Disabled</MenuItem>
+                      </TextField>
+                    </Grid>
+                    <Grid item xs={12} md={2}>
+                      <Button variant="contained" onClick={refreshUsers} fullWidth>
+                        Apply
+                      </Button>
+                    </Grid>
+                  </Grid>
+                  <Stack direction={{ xs: "column", md: "row" }} spacing={1} sx={{ mb: 1.5, p: 1.2, borderRadius: 2, bgcolor: "action.hover" }}>
                     <Chip
                       color={selectedUserIds.length ? "primary" : "default"}
                       label={selectedUserIds.length ? `${selectedUserIds.length} selected` : "No rows selected"}
@@ -607,6 +732,7 @@ export default function AdminDashboard() {
                       size="small"
                       variant="outlined"
                       disabled={!selectedUserIds.length}
+                      fullWidth={isMobile}
                       onClick={() =>
                         setConfirmAction({
                           title: "Activate selected users?",
@@ -622,6 +748,7 @@ export default function AdminDashboard() {
                       variant="outlined"
                       color="warning"
                       disabled={!selectedUserIds.length}
+                      fullWidth={isMobile}
                       onClick={() =>
                         setConfirmAction({
                           title: "Disable selected users?",
@@ -637,6 +764,7 @@ export default function AdminDashboard() {
                       variant="contained"
                       color="warning"
                       disabled={!selectedUserIds.length}
+                      fullWidth={isMobile}
                       onClick={() =>
                         setConfirmAction({
                           title: "Reset selected user passwords?",
@@ -645,93 +773,37 @@ export default function AdminDashboard() {
                         })
                       }
                     >
-                      Bulk reset Password123
+                      Bulk reset password
                     </Button>
                   </Stack>
-                  <TableContainer>
-                    <Table size="small">
-                      <TableHead>
-                        <TableRow>
-                          <TableCell padding="checkbox">
-                            <Checkbox
-                              checked={pagedUsers.length > 0 && pagedUsers.every((u) => selectedUserIds.includes(u.id))}
-                              indeterminate={
-                                pagedUsers.some((u) => selectedUserIds.includes(u.id)) &&
-                                !pagedUsers.every((u) => selectedUserIds.includes(u.id))
-                              }
-                              onChange={(e) => {
-                                if (e.target.checked) {
-                                  const merge = new Set([...selectedUserIds, ...pagedUsers.map((u) => u.id)]);
-                                  setSelectedUserIds(Array.from(merge));
-                                } else {
-                                  const removeSet = new Set(pagedUsers.map((u) => u.id));
-                                  setSelectedUserIds(selectedUserIds.filter((id) => !removeSet.has(id)));
-                                }
-                              }}
-                            />
-                          </TableCell>
-                          <TableCell>
-                            <TableSortLabel active={sortBy === "full_name"} direction={sortOrder} onClick={() => toggleSort("full_name")}>
-                              Name
-                            </TableSortLabel>
-                          </TableCell>
-                          <TableCell>
-                            <TableSortLabel active={sortBy === "email"} direction={sortOrder} onClick={() => toggleSort("email")}>
-                              Email
-                            </TableSortLabel>
-                          </TableCell>
-                          <TableCell>
-                            <TableSortLabel active={sortBy === "role"} direction={sortOrder} onClick={() => toggleSort("role")}>
-                              Role
-                            </TableSortLabel>
-                          </TableCell>
-                          <TableCell>
-                            <TableSortLabel active={sortBy === "status"} direction={sortOrder} onClick={() => toggleSort("status")}>
-                              Status
-                            </TableSortLabel>
-                          </TableCell>
-                          <TableCell>Password Policy</TableCell>
-                          <TableCell>
-                            <TableSortLabel active={sortBy === "created_at"} direction={sortOrder} onClick={() => toggleSort("created_at")}>
-                              Created
-                            </TableSortLabel>
-                          </TableCell>
-                          <TableCell align="right">Actions</TableCell>
-                        </TableRow>
-                      </TableHead>
-                      <TableBody>
-                        {pagedUsers.map((u) => (
-                          <TableRow key={u.id}>
-                            <TableCell padding="checkbox">
-                              <Checkbox
-                                checked={selectedUserIds.includes(u.id)}
-                                onChange={(e) => {
-                                  if (e.target.checked) {
-                                    setSelectedUserIds([...selectedUserIds, u.id]);
-                                  } else {
-                                    setSelectedUserIds(selectedUserIds.filter((id) => id !== u.id));
-                                  }
-                                }}
-                              />
-                            </TableCell>
-                            <TableCell>{u.full_name}</TableCell>
-                            <TableCell>{u.email}</TableCell>
-                            <TableCell>
-                              <Chip size="small" label={u.role} />
-                            </TableCell>
-                            <TableCell>
-                              <Chip
-                                size="small"
-                                label={u.status}
-                                color={u.status === "active" ? "success" : u.status === "disabled" ? "warning" : "default"}
-                              />
-                            </TableCell>
-                            <TableCell>{u.must_change_password ? "Force change on next login" : "Standard"}</TableCell>
-                            <TableCell>{new Date(u.created_at).toLocaleDateString()}</TableCell>
-                            <TableCell align="right">
-                              <Stack direction="row" spacing={1} justifyContent="flex-end">
+                  {isMobile ? (
+                    <Stack spacing={1.2}>
+                      {pagedUsers.map((u) => (
+                        <Card key={u.id} variant="outlined" sx={{ borderRadius: 2.2, borderColor: "divider" }}>
+                          <CardContent sx={{ "&:last-child": { pb: 2 } }}>
+                            <Stack spacing={1}>
+                              <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1}>
+                                <Typography fontWeight={700}>{u.full_name}</Typography>
+                                <Checkbox
+                                  checked={selectedUserIds.includes(u.id)}
+                                  onChange={(e) => {
+                                    if (e.target.checked) setSelectedUserIds([...selectedUserIds, u.id]);
+                                    else setSelectedUserIds(selectedUserIds.filter((id) => id !== u.id));
+                                  }}
+                                />
+                              </Stack>
+                              <Typography variant="body2" color="text.secondary">{u.email}</Typography>
+                              <Stack direction="row" flexWrap="wrap" gap={0.8}>
+                                <Chip size="small" label={u.role} />
+                                <Chip size="small" label={u.status} color={u.status === "active" ? "success" : u.status === "disabled" ? "warning" : "default"} />
+                                <Chip size="small" variant="outlined" label={u.must_change_password ? "Force password change" : "Standard password"} />
+                              </Stack>
+                              <Typography variant="caption" color="text.secondary">
+                                Created {new Date(u.created_at).toLocaleDateString()}
+                              </Typography>
+                              <Stack spacing={0.8}>
                                 {u.status !== "active" ? (
-                                  <Button size="small" variant="outlined" onClick={() => setUserStatus(u.id, "active")}>
+                                  <Button size="small" variant="outlined" onClick={() => setUserStatus(u.id, "active")} fullWidth>
                                     Activate
                                   </Button>
                                 ) : (
@@ -739,6 +811,7 @@ export default function AdminDashboard() {
                                     size="small"
                                     variant="outlined"
                                     color="warning"
+                                    fullWidth
                                     onClick={() =>
                                       setConfirmAction({
                                         title: "Disable user account?",
@@ -750,13 +823,14 @@ export default function AdminDashboard() {
                                     Disable
                                   </Button>
                                 )}
-                                <Button size="small" variant="outlined" onClick={() => forcePwdChange(u.id)}>
+                                <Button size="small" variant="outlined" onClick={() => forcePwdChange(u.id)} fullWidth>
                                   Force password change
                                 </Button>
                                 <Button
                                   size="small"
                                   variant="contained"
                                   color="warning"
+                                  fullWidth
                                   onClick={() =>
                                     setConfirmAction({
                                       title: "Reset password to default?",
@@ -765,18 +839,119 @@ export default function AdminDashboard() {
                                     })
                                   }
                                 >
-                                  Reset to Password123
+                                  Reset password
                                 </Button>
                               </Stack>
+                            </Stack>
+                          </CardContent>
+                        </Card>
+                      ))}
+                    </Stack>
+                  ) : (
+                    <TableContainer sx={{ borderRadius: 2, border: "1px solid", borderColor: "divider" }}>
+                      <Table size="small">
+                        <TableHead>
+                          <TableRow>
+                            <TableCell padding="checkbox">
+                              <Checkbox
+                                checked={pagedUsers.length > 0 && pagedUsers.every((u) => selectedUserIds.includes(u.id))}
+                                indeterminate={
+                                  pagedUsers.some((u) => selectedUserIds.includes(u.id)) &&
+                                  !pagedUsers.every((u) => selectedUserIds.includes(u.id))
+                                }
+                                onChange={(e) => {
+                                  if (e.target.checked) {
+                                    const merge = new Set([...selectedUserIds, ...pagedUsers.map((u) => u.id)]);
+                                    setSelectedUserIds(Array.from(merge));
+                                  } else {
+                                    const removeSet = new Set(pagedUsers.map((u) => u.id));
+                                    setSelectedUserIds(selectedUserIds.filter((id) => !removeSet.has(id)));
+                                  }
+                                }}
+                              />
                             </TableCell>
+                            <TableCell>
+                              <TableSortLabel active={sortBy === "full_name"} direction={sortOrder} onClick={() => toggleSort("full_name")}>
+                                Name
+                              </TableSortLabel>
+                            </TableCell>
+                            <TableCell>
+                              <TableSortLabel active={sortBy === "email"} direction={sortOrder} onClick={() => toggleSort("email")}>
+                                Email
+                              </TableSortLabel>
+                            </TableCell>
+                            <TableCell>
+                              <TableSortLabel active={sortBy === "role"} direction={sortOrder} onClick={() => toggleSort("role")}>
+                                Role
+                              </TableSortLabel>
+                            </TableCell>
+                            <TableCell>
+                              <TableSortLabel active={sortBy === "status"} direction={sortOrder} onClick={() => toggleSort("status")}>
+                                Status
+                              </TableSortLabel>
+                            </TableCell>
+                            <TableCell>Password Policy</TableCell>
+                            <TableCell>
+                              <TableSortLabel active={sortBy === "created_at"} direction={sortOrder} onClick={() => toggleSort("created_at")}>
+                                Created
+                              </TableSortLabel>
+                            </TableCell>
+                            <TableCell align="right">Actions</TableCell>
                           </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  </TableContainer>
+                        </TableHead>
+                        <TableBody>
+                          {pagedUsers.map((u) => (
+                          <TableRow key={u.id} hover>
+                              <TableCell padding="checkbox">
+                                <Checkbox
+                                  checked={selectedUserIds.includes(u.id)}
+                                  onChange={(e) => {
+                                    if (e.target.checked) {
+                                      setSelectedUserIds([...selectedUserIds, u.id]);
+                                    } else {
+                                      setSelectedUserIds(selectedUserIds.filter((id) => id !== u.id));
+                                    }
+                                  }}
+                                />
+                              </TableCell>
+                              <TableCell>{u.full_name}</TableCell>
+                              <TableCell>{u.email}</TableCell>
+                              <TableCell>
+                                <Chip size="small" label={u.role} />
+                              </TableCell>
+                              <TableCell>
+                                <Chip
+                                  size="small"
+                                  label={u.status}
+                                  color={u.status === "active" ? "success" : u.status === "disabled" ? "warning" : "default"}
+                                />
+                              </TableCell>
+                              <TableCell>{u.must_change_password ? "Force change on next login" : "Standard"}</TableCell>
+                              <TableCell>{new Date(u.created_at).toLocaleDateString()}</TableCell>
+                            <TableCell align="right">
+                              <IconButton
+                                size="small"
+                                onClick={(e) => openRowMenu(e, u)}
+                                sx={{
+                                  borderRadius: 1.5,
+                                  "&:hover": {
+                                    bgcolor: "transparent",
+                                    color: "primary.main"
+                                  }
+                                }}
+                              >
+                                <MoreVertIcon fontSize="small" />
+                              </IconButton>
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </TableContainer>
+                  )}
                   <TablePagination
                     component="div"
-                    rowsPerPageOptions={[5, 8, 15, 25]}
+                    rowsPerPageOptions={isSmallMobile ? [5, 8, 15] : [5, 8, 15, 25]}
                     count={filteredUsers.length}
                     rowsPerPage={rowsPerPage}
                     page={page}
@@ -785,11 +960,19 @@ export default function AdminDashboard() {
                       setRowsPerPage(parseInt(e.target.value, 10));
                       setPage(0);
                     }}
+                    sx={{
+                      ".MuiTablePagination-toolbar": {
+                        px: { xs: 0.5, sm: 1.5 },
+                        flexWrap: "wrap",
+                        rowGap: 0.5
+                      }
+                    }}
                   />
                   <Stack direction="row" justifyContent="flex-end" sx={{ mt: 1 }}>
                     <Button
                       size="small"
                       variant="outlined"
+                      fullWidth={isSmallMobile}
                       onClick={() =>
                         exportRowsToCsv("admin-user-directory.csv", filteredUsers, [
                           { header: "Name", value: (r) => r.full_name },
@@ -804,64 +987,58 @@ export default function AdminDashboard() {
                   </Stack>
                 </SectionPanel>
 
-                <SectionPanel>
-                  <Typography variant="h6" fontWeight={800}>
-                    Activity timeline (latest)
-                  </Typography>
-                  <Typography variant="body2" color="text.secondary">
-                    Recent system actions for quick operational awareness.
-                  </Typography>
-                  <Divider sx={{ my: 2 }} />
-                  {auditLogs.length === 0 ? (
-                    <Alert severity="info">No recent activity found.</Alert>
-                  ) : (
-                    <Stack spacing={1}>
-                      {auditLogs.slice(0, 8).map((log) => (
-                        <Card key={log.id} variant="outlined" sx={{ bgcolor: "background.default" }}>
-                          <CardContent sx={{ py: 1.5, "&:last-child": { pb: 1.5 } }}>
-                            <Stack direction={{ xs: "column", md: "row" }} justifyContent="space-between" spacing={1}>
-                              <Box>
-                                <Typography variant="body2" fontWeight={700}>
-                                  {log.action}
-                                </Typography>
-                                <Typography variant="caption" color="text.secondary">
-                                  {log.entity_type}:{log.entity_id}
-                                </Typography>
-                              </Box>
-                              <Typography variant="caption" color="text.secondary">
-                                {new Date(log.created_at).toLocaleString()}
-                              </Typography>
-                            </Stack>
-                          </CardContent>
-                        </Card>
-                      ))}
-                    </Stack>
-                  )}
-                </SectionPanel>
               </Stack>
             ) : null}
 
             {!loading && activeSection === "permissions" ? (
               <SectionPanel>
-                <Typography variant="h6" fontWeight={800}>
-                  Roles & permissions matrix
-                </Typography>
+                <Stack direction={{ xs: "column", sm: "row" }} justifyContent="space-between" spacing={1}>
+                  <Box>
+                    <Typography variant="h6" fontWeight={800}>
+                      Roles & permissions
+                    </Typography>
+                    <Typography variant="body2" color="text.secondary">
+                      Access map for each role in the platform.
+                    </Typography>
+                  </Box>
+                  <Chip
+                    label={`${permMatrix ? Object.keys(permMatrix).length : 0} roles`}
+                    color="primary"
+                    variant="outlined"
+                    sx={{ alignSelf: "flex-start" }}
+                  />
+                </Stack>
                 <Divider sx={{ my: 2 }} />
                 {permMatrix ? (
-                  <Stack spacing={2}>
+                  <Grid container spacing={1.5}>
                     {Object.entries(permMatrix).map(([role, permissions]) => (
-                      <Box key={role}>
-                        <Typography variant="subtitle1" fontWeight={700} sx={{ mb: 1 }}>
-                          {role}
-                        </Typography>
-                        <Stack direction="row" flexWrap="wrap" gap={1}>
-                          {permissions.map((p) => (
-                            <Chip key={p} label={p} size="small" />
-                          ))}
-                        </Stack>
-                      </Box>
+                      <Grid item xs={12} md={6} key={role}>
+                        <Card variant="outlined" sx={{ borderRadius: 2.5, borderColor: "divider", height: "100%" }}>
+                          <CardContent sx={{ p: 2 }}>
+                            <Stack spacing={1.2}>
+                              <Stack direction="row" justifyContent="space-between" alignItems="center">
+                                <Typography variant="subtitle1" fontWeight={800} sx={{ textTransform: "capitalize" }}>
+                                  {role.replace("_", " ")}
+                                </Typography>
+                                <Chip size="small" label={`${permissions.length} permissions`} />
+                              </Stack>
+                              <Stack direction="row" flexWrap="wrap" gap={0.8}>
+                                {permissions.map((p) => (
+                                  <Chip
+                                    key={p}
+                                    label={p.replace(/_/g, " ")}
+                                    size="small"
+                                    variant="outlined"
+                                    sx={{ borderRadius: 1.5 }}
+                                  />
+                                ))}
+                              </Stack>
+                            </Stack>
+                          </CardContent>
+                        </Card>
+                      </Grid>
                     ))}
-                  </Stack>
+                  </Grid>
                 ) : (
                   <Alert severity="info">No permission matrix available.</Alert>
                 )}
@@ -923,7 +1100,7 @@ export default function AdminDashboard() {
                           <TableCell>{r.status}</TableCell>
                           <TableCell align="right">
                             {r.status === "pending" ? (
-                              <Stack direction="row" spacing={1} justifyContent="flex-end">
+                              <Stack direction={{ xs: "column", sm: "row" }} spacing={1} justifyContent="flex-end">
                                 <Button size="small" variant="outlined" color="success" onClick={() => reviewRequest(r.id, "approved")}>Approve</Button>
                                 <Button size="small" variant="outlined" color="error" onClick={() => reviewRequest(r.id, "rejected")}>Reject</Button>
                               </Stack>
@@ -1140,7 +1317,7 @@ export default function AdminDashboard() {
                 </Typography>
                 <Divider sx={{ my: 2 }} />
                 <Stack direction={{ xs: "column", md: "row" }} spacing={2} alignItems={{ xs: "stretch", md: "center" }}>
-                  <Button variant="contained" href="http://127.0.0.1:8010/api/v1/admin/system/export/users.csv">
+                  <Button variant="contained" href={exportUsersCsvUrl}>
                     Export users CSV
                   </Button>
                   <Button variant="outlined" component="label">
@@ -1248,6 +1425,80 @@ export default function AdminDashboard() {
           </Button>
         </DialogActions>
       </Dialog>
+      <Menu
+        anchorEl={rowMenuAnchorEl}
+        open={Boolean(rowMenuAnchorEl && rowMenuUser)}
+        onClose={closeRowMenu}
+        anchorReference={rowMenuPosition ? "anchorPosition" : "anchorEl"}
+        anchorPosition={rowMenuPosition || undefined}
+        anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
+        transformOrigin={{ vertical: "top", horizontal: "right" }}
+        PaperProps={{
+          sx: {
+            borderRadius: 2,
+            minWidth: 210,
+            "& .MuiMenuItem-root": {
+              borderRadius: 1.2,
+              mx: 0.6,
+              my: 0.2,
+              "&:hover": {
+                bgcolor: "transparent",
+                color: "primary.main"
+              }
+            }
+          }
+        }}
+      >
+        {rowMenuUser?.status !== "active" ? (
+          <MenuItem
+            onClick={() => {
+              const user = rowMenuUser;
+              closeRowMenu();
+              if (user) void setUserStatus(user.id, "active");
+            }}
+          >
+            Activate
+          </MenuItem>
+        ) : (
+          <MenuItem
+            onClick={() => {
+              const user = rowMenuUser;
+              closeRowMenu();
+              if (!user) return;
+              setConfirmAction({
+                title: "Disable user account?",
+                description: `Disable ${user.full_name} (${user.email}). They will no longer access the platform until reactivated.`,
+                onConfirm: () => setUserStatus(user.id, "disabled")
+              });
+            }}
+          >
+            Disable
+          </MenuItem>
+        )}
+        <MenuItem
+          onClick={() => {
+            const user = rowMenuUser;
+            closeRowMenu();
+            if (user) void forcePwdChange(user.id);
+          }}
+        >
+          Force password change
+        </MenuItem>
+        <MenuItem
+          onClick={() => {
+            const user = rowMenuUser;
+            closeRowMenu();
+            if (!user) return;
+            setConfirmAction({
+              title: "Reset password to default?",
+              description: `Reset ${user.full_name}'s password to Password123 and require change on next login.`,
+              onConfirm: () => resetPasswordToDefault(user.id)
+            });
+          }}
+        >
+          Reset password
+        </MenuItem>
+      </Menu>
       <Snackbar open={Boolean(success)} autoHideDuration={3000} onClose={() => setSuccess("")}>
         <Alert severity="success" variant="filled" onClose={() => setSuccess("")}>
           {success}

@@ -40,7 +40,7 @@ class CatalogReviewPayload(BaseModel):
 @router.get("/catalog")
 def get_catalog(
     db: Session = Depends(get_db),
-    _: User = Depends(require_roles(UserRole.employee, UserRole.manager, UserRole.hr_admin, UserRole.system_admin, UserRole.executive)),
+    _: User = Depends(require_roles(UserRole.employee, UserRole.manager, UserRole.hr_admin, UserRole.system_admin)),
 ) -> dict:
     departments = db.query(DepartmentCatalog).filter(DepartmentCatalog.active.is_(True)).order_by(DepartmentCatalog.name.asc()).all()
     job_titles = db.query(JobTitleCatalog).filter(JobTitleCatalog.active.is_(True)).order_by(JobTitleCatalog.name.asc()).all()

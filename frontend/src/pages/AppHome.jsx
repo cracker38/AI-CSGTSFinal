@@ -21,7 +21,6 @@ function RoleChip({ role }) {
     system_admin: { label: "System Admin", color: "error" },
     hr_admin: { label: "HR Admin", color: "secondary" },
     manager: { label: "Manager", color: "primary" },
-    executive: { label: "Executive", color: "primary" },
     employee: { label: "Employee", color: "success" }
   };
   const m = map[role] || { label: role, color: "default" };

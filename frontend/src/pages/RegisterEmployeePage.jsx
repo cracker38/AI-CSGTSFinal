@@ -1,10 +1,13 @@
 import React, { useEffect, useMemo, useState } from "react";
 import {
   Alert,
+  Box,
   Button,
   Card,
   CardContent,
+  Chip,
   CircularProgress,
+  Divider,
   Grid,
   MenuItem,
   Stack,
@@ -98,14 +101,23 @@ export default function RegisterEmployeePage() {
 
   return (
     <AppShell title="Employee Registration">
-      <Stack spacing={2} sx={{ maxWidth: 920, mx: "auto" }}>
-        <Typography variant="h5" fontWeight={800}>
-          Optimized AI Onboarding (10 inputs)
-        </Typography>
-        <Typography color="text.secondary">
-          Upload your CV (PDF) and the system will extract skills, experience, education, certifications, and generate an
-          AI-enhanced skill profile.
-        </Typography>
+      <Stack spacing={2} sx={{ maxWidth: 980, mx: "auto" }}>
+        <Card
+          variant="outlined"
+          sx={{
+            borderRadius: 3,
+            background: "linear-gradient(135deg, rgba(25,118,210,0.10) 0%, rgba(46,125,50,0.08) 100%)"
+          }}
+        >
+          <CardContent sx={{ p: { xs: 2, md: 2.6 } }}>
+            <Stack spacing={1.2} alignItems="center">
+              <Chip label="AI-CSGTS Employee Portal" color="primary" size="small" />
+              <Typography variant="h5" fontWeight={800} textAlign="center">
+                Employee Registration
+              </Typography>
+            </Stack>
+          </CardContent>
+        </Card>
 
         <Card variant="outlined">
           <CardContent>
@@ -124,6 +136,7 @@ export default function RegisterEmployeePage() {
                   Registration catalog is incomplete. Ask an administrator to add departments, job titles, and skills in the database.
                 </Alert>
               ) : null}
+              <Divider />
 
               <Grid container spacing={2}>
                 <Grid item xs={12} md={6}>
