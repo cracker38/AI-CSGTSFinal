@@ -473,6 +473,9 @@ export default function EmployeeDashboard() {
                   <Typography variant="h6" fontWeight={800}>
                     Individual skill gap visualization
                   </Typography>
+                  <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                    Gaps use normalized skill names. Importance weights emphasize your primary domain and role-specific skills; weighted impact drives training priority.
+                  </Typography>
                   <Divider sx={{ my: 2 }} />
                   <TableContainer>
                     <Table size="small">
@@ -482,7 +485,10 @@ export default function EmployeeDashboard() {
                           <TableCell align="right">Required</TableCell>
                           <TableCell align="right">Current</TableCell>
                           <TableCell align="right">Gap</TableCell>
+                          <TableCell align="right">Weight</TableCell>
+                          <TableCell align="right">Weighted impact</TableCell>
                           <TableCell>Severity</TableCell>
+                          <TableCell>Why</TableCell>
                         </TableRow>
                       </TableHead>
                       <TableBody>
@@ -492,8 +498,26 @@ export default function EmployeeDashboard() {
                             <TableCell align="right">{g.required_level}</TableCell>
                             <TableCell align="right">{g.current_level}</TableCell>
                             <TableCell align="right">{g.gap}</TableCell>
+                            <TableCell align="right">{g.importance_weight != null ? Number(g.importance_weight).toFixed(2) : "—"}</TableCell>
+                            <TableCell align="right">{g.weighted_gap_impact != null ? Number(g.weighted_gap_impact).toFixed(2) : "—"}</TableCell>
                             <TableCell>
-                              <Chip size="small" color={g.severity === "critical" ? "error" : g.severity === "moderate" ? "warning" : "success"} label={g.severity} />
+                              <Chip
+                                size="small"
+                                color={
+                                  g.severity === "high"
+                                    ? "error"
+                                    : g.severity === "medium"
+                                      ? "warning"
+                                      : g.severity === "low"
+                                        ? "warning"
+                                        : "success"
+                                }
+                                label={g.severity === "none" ? "meets target" : g.severity}
+                                variant={g.severity === "none" ? "outlined" : "filled"}
+                              />
+                            </TableCell>
+                            <TableCell sx={{ maxWidth: 280, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} title={g.explanation}>
+                              {g.explanation || "—"}
                             </TableCell>
                           </TableRow>
                         ))}

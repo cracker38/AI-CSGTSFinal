@@ -25,7 +25,9 @@ import {
   TableHead,
   TableRow,
   TextField,
-  Typography
+  Typography,
+  useMediaQuery,
+  useTheme
 } from "@mui/material";
 import { Bar, BarChart, CartesianGrid, Legend, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import CloudUploadIcon from "@mui/icons-material/CloudUpload";
@@ -54,6 +56,8 @@ const SECTIONS = [
 const HR_SECTION_KEYS = new Set(SECTIONS.map((s) => s.key));
 
 export default function HrDashboard() {
+  const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down("md"));
   const exportRef = useRef(null);
   const trainingMaterialFileRef = useRef(null);
   const [searchParams, setSearchParams] = useSearchParams();
@@ -106,6 +110,10 @@ export default function HrDashboard() {
   const [hrTrainPct, setHrTrainPct] = useState({});
   const { mode } = useThemeMode();
   const { colors, tooltipStyle } = getChartTheme(mode);
+  const activeSectionLabel = useMemo(
+    () => SECTIONS.find((s) => s.key === activeSection)?.label ?? "HR overview",
+    [activeSection]
+  );
 
   async function load() {
     setLoading(true);
@@ -127,7 +135,13 @@ export default function HrDashboard() {
       const gRes = await api.get("/analytics/hr/skill-gaps");
       setGapTable(gRes.data?.rows || []);
       setGapSeverity(gRes.data?.severity_breakdown || { HIGH: 0, MEDIUM: 0, LOW: 0 });
-      setTopGaps((gRes.data?.rows || []).slice(0, 20).map((r) => ({ skill: r.skill, total_gap: r.gap })));
+      setTopGaps(
+        (gRes.data?.rows || []).slice(0, 20).map((r) => ({
+          skill: r.skill,
+          total_gap: r.gap,
+          weighted_impact: r.weighted_gap_impact ?? 0
+        }))
+      );
       const dRes = await api.get("/analytics/hr/skill-gaps/by-department");
       setDeptGaps(dRes.data?.rows || []);
       const oRes = await api.get("/analytics/org/kpis");
@@ -482,7 +496,7 @@ export default function HrDashboard() {
     const departments = new Set(employees.map((r) => r.department)).size;
     const activeProjects = 0; // Project module not implemented yet in this build.
     const gapsCount = topGaps.length;
-    const gapTotal = topGaps.reduce((acc, g) => acc + (Number(g.total_gap) || 0), 0);
+    const gapTotal = topGaps.reduce((acc, g) => acc + (Number(g.weighted_impact) || Number(g.total_gap) || 0), 0);
     const skillHealthScore = Math.max(0, Math.min(100, Math.round(100 - gapTotal * 1.5)));
     const trainingInProgress =
       hrOverview?.training_in_progress != null
@@ -510,16 +524,99 @@ export default function HrDashboard() {
     };
   }, [kpis, records, recruitmentData]);
 
+  function SectionPanel({ children }) {
+    return (
+      <Card
+        variant="outlined"
+        sx={{
+          borderRadius: 3,
+          borderColor: "divider",
+          boxShadow: "0 8px 22px rgba(0,0,0,0.06)"
+        }}
+      >
+        <CardContent sx={{ p: { xs: 1.5, sm: 2, md: 2.5 } }}>{children}</CardContent>
+      </Card>
+    );
+  }
+
   return (
     <AppShell title="HR Dashboard">
       <Stack spacing={2}>
         {error ? <Alert severity="error">{error}</Alert> : null}
 
+        <Card
+          variant="outlined"
+          sx={{
+            borderRadius: 3,
+            borderColor: "divider",
+            background: "linear-gradient(135deg, rgba(25,118,210,0.10) 0%, rgba(46,125,50,0.08) 100%)"
+          }}
+        >
+          <CardContent>
+            <Stack
+              direction={{ xs: "column", md: "row" }}
+              spacing={1.2}
+              alignItems={{ xs: "flex-start", md: "center" }}
+              justifyContent="space-between"
+            >
+              <Box>
+                <Typography variant="h5" fontWeight={800}>
+                  HR Intelligence Command Center
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  Workforce operations and analytics for <strong>{activeSectionLabel}</strong>.
+                </Typography>
+              </Box>
+              <Stack direction={{ xs: "column", sm: "row" }} spacing={1} width={{ xs: "100%", md: "auto" }}>
+                <Button variant="outlined" onClick={load} fullWidth={isMobile}>
+                  Refresh data
+                </Button>
+                <Button
+                  variant="contained"
+                  fullWidth={isMobile}
+                  onClick={() =>
+                    exportElementToPdfLazy(exportRef.current, `hr-${activeSection}.pdf`, {
+                      role: "hr_admin",
+                      section: activeSection,
+                      title: "HR Dashboard Report"
+                    })
+                  }
+                >
+                  Export PDF
+                </Button>
+              </Stack>
+            </Stack>
+          </CardContent>
+        </Card>
+
         <Grid container spacing={2}>
-          {headerKpis.map((k) => (
+          {headerKpis.map((k, idx) => (
             <Grid item xs={12} sm={6} md={3} key={k.label}>
-              <Card variant="outlined">
-                <CardContent>
+              <Card
+                variant="outlined"
+                sx={{
+                  borderRadius: 3,
+                  borderColor: "divider",
+                  height: "100%",
+                  position: "relative",
+                  overflow: "hidden",
+                  background:
+                    idx % 2 === 0
+                      ? "linear-gradient(145deg, rgba(25,118,210,0.08) 0%, rgba(255,255,255,0.02) 100%)"
+                      : "linear-gradient(145deg, rgba(46,125,50,0.08) 0%, rgba(255,255,255,0.02) 100%)"
+                }}
+              >
+                <Box
+                  sx={{
+                    position: "absolute",
+                    top: 0,
+                    left: 0,
+                    height: 4,
+                    width: "100%",
+                    bgcolor: idx % 2 === 0 ? "secondary.main" : "primary.main"
+                  }}
+                />
+                <CardContent sx={{ pt: 2 }}>
                   <Typography variant="body2" color="text.secondary">
                     {k.label}
                   </Typography>
@@ -550,14 +647,12 @@ export default function HrDashboard() {
             </Stack>
             <div ref={exportRef}>
             {loading ? (
-              <Card variant="outlined">
-                <CardContent>
-                  <Stack direction="row" spacing={2} alignItems="center">
-                    <CircularProgress size={22} />
-                    <Typography>Loading HR analytics...</Typography>
-                  </Stack>
-                </CardContent>
-              </Card>
+              <SectionPanel>
+                <Stack direction="row" spacing={2} alignItems="center">
+                  <CircularProgress size={22} />
+                  <Typography>Loading HR analytics...</Typography>
+                </Stack>
+              </SectionPanel>
             ) : null}
 
             {!loading && activeSection === "home" ? (
@@ -1201,6 +1296,7 @@ export default function HrDashboard() {
                           <TableCell align="right">Required</TableCell>
                           <TableCell align="right">Available</TableCell>
                           <TableCell align="right">Gap</TableCell>
+                          <TableCell align="right">Weighted impact</TableCell>
                           <TableCell>Severity</TableCell>
                         </TableRow>
                       </TableHead>
@@ -1211,6 +1307,7 @@ export default function HrDashboard() {
                             <TableCell align="right">{r.required}</TableCell>
                             <TableCell align="right">{r.available}</TableCell>
                             <TableCell align="right">{r.gap}</TableCell>
+                            <TableCell align="right">{r.weighted_gap_impact != null ? r.weighted_gap_impact : "—"}</TableCell>
                             <TableCell>
                               <Alert
                                 severity={r.severity === "HIGH" ? "error" : r.severity === "MEDIUM" ? "warning" : "success"}
@@ -1233,7 +1330,7 @@ export default function HrDashboard() {
                         <YAxis />
                         <Tooltip contentStyle={tooltipStyle} />
                         <Legend />
-                        <Bar dataKey="total_gap" fill={colors.warning} name="Gap severity" />
+                        <Bar dataKey="weighted_impact" fill={colors.warning} name="Weighted gap impact" />
                       </BarChart>
                     </ResponsiveContainer>
                   </Box>
@@ -1244,7 +1341,8 @@ export default function HrDashboard() {
                       onClick={() =>
                         exportRowsToCsv("hr-top-gaps.csv", filteredTopGaps, [
                           { header: "Skill", value: (r) => r.skill },
-                          { header: "Total Gap", value: (r) => r.total_gap }
+                          { header: "Org gap (sum)", value: (r) => r.total_gap },
+                          { header: "Weighted impact", value: (r) => r.weighted_impact ?? "" }
                         ])
                       }
                     >
@@ -1256,7 +1354,8 @@ export default function HrDashboard() {
                       <TableHead>
                         <TableRow>
                           <TableCell>Skill</TableCell>
-                          <TableCell align="right">Total gap</TableCell>
+                          <TableCell align="right">Org gap (sum)</TableCell>
+                          <TableCell align="right">Weighted impact</TableCell>
                         </TableRow>
                       </TableHead>
                       <TableBody>
@@ -1264,6 +1363,7 @@ export default function HrDashboard() {
                           <TableRow key={g.skill}>
                             <TableCell>{g.skill}</TableCell>
                             <TableCell align="right">{g.total_gap}</TableCell>
+                            <TableCell align="right">{g.weighted_impact ?? "—"}</TableCell>
                           </TableRow>
                         ))}
                       </TableBody>

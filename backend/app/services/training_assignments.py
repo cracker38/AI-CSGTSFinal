@@ -10,9 +10,11 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.models.employee_profile import EmployeeProfile
 from app.models.hr_action import HrAction
+from app.models.manager_project import ManagerProject, ProjectAssignment, ProjectSkillRequirement, ProjectStatus
 from app.models.skill import Skill
 from app.models.user_skill import SkillSource, UserSkill
 from app.schemas.hr_action import MaterialReadingProgressUpdate, TrainingAssignmentProgressUpdate
+from app.services.skill_normalization import normalize_skill_name
 
 # Heartbeat gap after which an open session is auto-paused (employee idle / closed browser).
 def stale_heartbeat_seconds() -> int:
@@ -423,39 +425,149 @@ def training_assignment_to_progress_item(action: HrAction) -> dict:
     }
 
 
-def _bump_skill_for_training(db: Session, user_id: uuid.UUID, target_skill: str, source: SkillSource) -> None:
+def _training_level_boost_from_verified_time(verified_seconds: int) -> int:
+    """
+    Stronger inventory gains when the employee actually spent verified time on the course.
+    Capped per completion so one program cannot jump from 0 → 5 alone.
+    """
+    sec = max(0, int(verified_seconds or 0))
+    if sec >= 7200:
+        return 3
+    if sec >= 3600:
+        return 2
+    if sec >= 1800:
+        return 2
+    return 1
+
+
+def _bump_skill_for_training(
+    db: Session,
+    user_id: uuid.UUID,
+    target_skill: str,
+    source: SkillSource,
+    *,
+    boost: int = 1,
+) -> tuple[str, int]:
+    """
+    Raise UserSkill for the target skill using canonical names (same keys as gap engine).
+    Returns (canonical_skill, new_level). Missing profile → ("", 0).
+    """
     raw = (target_skill or "").strip()
     if not raw:
-        return
-    key = raw.lower()
-    skill = db.query(Skill).filter(func.lower(Skill.name) == key).one_or_none()
+        return "", 0
+    canon = normalize_skill_name(raw) or raw.lower().strip()
+    if not canon:
+        return "", 0
+    boost = max(1, min(3, int(boost)))
+
+    skill = db.query(Skill).filter(Skill.name == canon).one_or_none()
     if not skill:
-        skill = Skill(name=raw[:120], category="training")
+        skill = db.query(Skill).filter(func.lower(Skill.name) == canon.lower()).one_or_none()
+    if not skill:
+        skill = Skill(name=canon[:120], category="training")
         db.add(skill)
         db.flush()
+
     row = db.query(UserSkill).filter(UserSkill.user_id == user_id, UserSkill.skill_id == skill.id).one_or_none()
     if row:
-        row.level = min(5, int(row.level) + 1)
+        row.level = min(5, int(row.level) + boost)
         row.source = source
-    else:
-        db.add(UserSkill(user_id=user_id, skill_id=skill.id, level=1, source=source))
+        db.add(row)
+        return canon, int(row.level)
+
+    initial = min(5, max(2, boost))
+    db.add(UserSkill(user_id=user_id, skill_id=skill.id, level=initial, source=source))
+    return canon, initial
 
 
-def _append_completion_profile(db: Session, user_id: uuid.UUID, program_name: str, target_skill: str, hr_action_id: uuid.UUID) -> None:
+def _apply_training_project_impacts(db: Session, user_id: uuid.UUID, canon: str, new_level: int) -> None:
+    """If the skill maps to an assigned project requirement, record alignment (project logic hook)."""
+    if not canon or new_level <= 0:
+        return
+    profile = db.query(EmployeeProfile).filter(EmployeeProfile.user_id == user_id).one_or_none()
+    if not profile:
+        return
+    impacts: list[dict] = []
+    rows = (
+        db.query(ManagerProject.name, ProjectSkillRequirement.required_level, Skill.name)
+        .join(ProjectSkillRequirement, ProjectSkillRequirement.project_id == ManagerProject.id)
+        .join(Skill, Skill.id == ProjectSkillRequirement.skill_id)
+        .join(ProjectAssignment, ProjectAssignment.project_id == ManagerProject.id)
+        .filter(
+            ProjectAssignment.employee_id == user_id,
+            ManagerProject.status.in_([ProjectStatus.active, ProjectStatus.draft]),
+        )
+        .all()
+    )
+    for pname, req_lvl, sk_name in rows:
+        if normalize_skill_name(sk_name) != canon:
+            continue
+        req_i = int(req_lvl)
+        impacts.append(
+            {
+                "project_name": pname,
+                "skill": canon,
+                "required_level": req_i,
+                "your_level_after_training": new_level,
+                "meets_project_requirement": new_level >= req_i,
+            }
+        )
+    if not impacts:
+        return
+    ai = dict(profile.ai_profile or {})
+    ai["last_training_project_impacts"] = impacts
+    log = list(ai.get("training_project_impact_log") or [])
+    log.append({"at": datetime.now(timezone.utc).isoformat(), "impacts": impacts})
+    ai["training_project_impact_log"] = log[-20:]
+    profile.ai_profile = ai
+    db.add(profile)
+
+
+def _append_completion_profile(
+    db: Session,
+    user_id: uuid.UUID,
+    program_name: str,
+    target_skill: str,
+    hr_action_id: uuid.UUID,
+    *,
+    canonical_skill: str,
+    verified_seconds: int,
+    level_boost: int,
+    new_level: int,
+) -> None:
     profile = db.query(EmployeeProfile).filter(EmployeeProfile.user_id == user_id).one_or_none()
     if not profile:
         return
     ai = dict(profile.ai_profile or {})
     hist = list(ai.get("training_completions") or [])
-    hist.append(
-        {
-            "program_name": program_name,
-            "target_skill": target_skill,
-            "hr_action_id": str(hr_action_id),
-            "completed_at": datetime.now(timezone.utc).isoformat(),
-        }
-    )
+    entry = {
+        "program_name": program_name,
+        "target_skill": target_skill,
+        "canonical_skill": canonical_skill,
+        "hr_action_id": str(hr_action_id),
+        "completed_at": datetime.now(timezone.utc).isoformat(),
+        "verified_learning_seconds": int(verified_seconds),
+        "level_boost": int(level_boost),
+        "inventory_level_after": int(new_level),
+    }
+    hist.append(entry)
     ai["training_completions"] = hist[-50:]
+
+    stats = dict(ai.get("training_stats") or {})
+    stats["completed_count"] = int(stats.get("completed_count") or 0) + 1
+    stats["total_verified_seconds"] = int(stats.get("total_verified_seconds") or 0) + int(verified_seconds)
+    stats["last_completed_at"] = entry["completed_at"]
+    ai["training_stats"] = stats
+
+    growth = min(
+        100.0,
+        float(stats["completed_count"]) * 10.0 + min(40.0, float(stats["total_verified_seconds"]) / 3600.0 * 3.0),
+    )
+    ai["profile_growth_index"] = round(growth, 2)
+
+    conf = float(ai.get("confidence") or 0.5)
+    ai["confidence"] = round(min(0.95, conf + 0.04 + min(0.06, level_boost * 0.02)), 3)
+
     profile.ai_profile = ai
     db.add(profile)
 
@@ -520,8 +632,24 @@ def apply_training_assignment_update(
         action.status = "completed"
         program = str(payload.get("program_name") or "Training Program")
         skill_name = str(payload.get("target_skill") or "general")
-        _bump_skill_for_training(db, action.target_user_id, skill_name, skill_source_on_complete)
-        _append_completion_profile(db, action.target_user_id, program, skill_name, action.id)
+        verified_sec = int(payload.get("total_learning_seconds") or 0)
+        boost = _training_level_boost_from_verified_time(verified_sec)
+        canon, new_lvl = _bump_skill_for_training(
+            db, action.target_user_id, skill_name, skill_source_on_complete, boost=boost
+        )
+        if canon and new_lvl > 0:
+            _append_completion_profile(
+                db,
+                action.target_user_id,
+                program,
+                skill_name,
+                action.id,
+                canonical_skill=canon,
+                verified_seconds=verified_sec,
+                level_boost=boost,
+                new_level=new_lvl,
+            )
+            _apply_training_project_impacts(db, action.target_user_id, canon, new_lvl)
     else:
         if body.progress_pct is not None:
             new_p = int(body.progress_pct)

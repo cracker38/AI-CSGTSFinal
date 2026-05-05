@@ -24,6 +24,7 @@ from app.models.master_data import JobTitleCatalog
 from app.models.skill import Skill
 from app.models.user import AccountStatus, User, UserRole
 from app.models.user_skill import UserSkill
+from app.services.skill_normalization import normalize_skill_name
 
 router = APIRouter()
 
@@ -214,7 +215,9 @@ def skills_gaps(
     )
     required_by_skill: dict[str, float] = defaultdict(float)
     for skill_name, required in req_rows:
-        required_by_skill[skill_name] = max(required_by_skill[skill_name], float(required))
+        key = normalize_skill_name(skill_name)
+        if key:
+            required_by_skill[key] = max(required_by_skill[key], float(required))
 
     team = _team_query(db, manager.id).all()
     team_ids = [u.id for u in team]
@@ -226,7 +229,9 @@ def skills_gaps(
     )
     levels_by_skill: dict[str, list[int]] = defaultdict(list)
     for skill_name, lvl in current_rows:
-        levels_by_skill[skill_name].append(int(lvl))
+        key = normalize_skill_name(skill_name)
+        if key:
+            levels_by_skill[key].append(int(lvl))
 
     items = []
     for skill_name, required in required_by_skill.items():

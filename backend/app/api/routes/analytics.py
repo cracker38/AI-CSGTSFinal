@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
-from app.ai.gap import compute_skill_gaps, recommend_actions
+from app.ai.gap import compute_skill_gaps, gap_payload_from_items, recommend_actions
 from app.api.deps import get_current_user
 from app.db.session import get_db
 from app.models.employee_profile import EmployeeProfile
@@ -30,26 +30,11 @@ from app.services.training_assignments import (
     training_session_heartbeat,
 )
 from app.services.training_materials import get_material_download_path
+from app.services.required_skill_profile import required_skill_profile_with_weights
+from app.services.skill_normalization import normalize_skill_level_map, normalize_skill_name
 
 
 router = APIRouter()
-
-
-def _required_skills_for_user(user: User) -> dict[str, int]:
-    # Starter rules; in enterprise version, this comes from role/department/job profiles (SFIA/ITIL aligned).
-    base: dict[str, int] = {
-        user.primary_skill.lower(): 3,
-        "communication": 2,
-        "project management": 1,
-    }
-    jt = user.job_title.lower()
-    if "data" in jt or "analyst" in jt:
-        base.update({"python": 3, "sql": 3, "pandas": 2, "machine learning": 2})
-    if "engineer" in jt or "developer" in jt:
-        base.update({"git": 2, "docker": 1, "sql": 2})
-    if "manager" in jt:
-        base.update({"agile": 2, "jira": 2})
-    return base
 
 
 def _employee_profile_or_404(db: Session, user_id) -> EmployeeProfile:
@@ -85,20 +70,28 @@ def my_skill_gaps(
         .filter(UserSkill.user_id == user.id)
         .all()
     )
-    current = {name: int(level) for (name, level) in rows}
-    required = _required_skills_for_user(user)
+    current = normalize_skill_level_map({name: int(level) for (name, level) in rows})
+    required, importance_weights = required_skill_profile_with_weights(user)
 
-    gaps = compute_skill_gaps(current=current, required=required, confidence_base=0.65)
+    gaps = compute_skill_gaps(
+        current=current,
+        required=required,
+        importance_weights=importance_weights,
+        confidence_base=0.65,
+    )
     recs = recommend_actions(gaps)
     return {
         "required_profile": required,
         "current_profile": current,
-        "gaps": [g.__dict__ for g in gaps],
+        "importance_weights": importance_weights,
+        "gaps": gap_payload_from_items(gaps),
         "recommendations": recs,
         "explainability": {
-            "rule": "Required skills are derived from job_title + primary_skill starter rules; current skills are from CV/self/manager inventory.",
-            "confidence_notes": "Confidence is higher when a skill is present in the validated inventory; missing skills reduce confidence.",
+            "rule": "Required skills use a unified profile (primary skill + baseline + job-title hints). Skill names are normalized so CV/catalog variants map to one canonical gap.",
+            "weighted_gaps": "weighted_gap = gap × importance_weight; weighted_gap_impact = max(0,gap)×weight for prioritization.",
+            "confidence_notes": "Confidence is reduced when current level is missing (inventory gap). Evidence source is used downstream in training recommendations.",
         },
+        "engine": {"version": "2.0", "weighted_gap_engine": True},
     }
 
 
@@ -128,18 +121,24 @@ def employee_overview(
     )
     skills = db.query(UserSkill).filter(UserSkill.user_id == user.id).all()
     skill_score = round(sum(int(s.level) for s in skills) / max(1, len(skills)), 2)
-    gaps = compute_skill_gaps(
-        current={
+    current_levels = normalize_skill_level_map(
+        {
             n: int(l)
             for (n, l) in db.query(Skill.name, UserSkill.level)
             .join(UserSkill, Skill.id == UserSkill.skill_id)
             .filter(UserSkill.user_id == user.id)
             .all()
-        },
-        required=_required_skills_for_user(user),
+        }
+    )
+    req_lv, req_w = required_skill_profile_with_weights(user)
+    gaps = compute_skill_gaps(
+        current=current_levels,
+        required=req_lv,
+        importance_weights=req_w,
         confidence_base=0.65,
     )
     gap_score = round(sum(max(0, g.gap) for g in gaps) / max(1, len(gaps)), 2)
+    weighted_gap_score = round(sum(g.weighted_gap_impact for g in gaps) / max(1, len(gaps)), 2)
     refresh_stale_training_sessions(db, user.id)
     active_trainings = (
         db.query(HrAction)
@@ -167,16 +166,36 @@ def employee_overview(
         )
         .count()
     )
+    completed_training_rows = (
+        db.query(HrAction)
+        .filter(
+            HrAction.target_user_id == user.id,
+            HrAction.action_type == "training_assign",
+            HrAction.status == "completed",
+        )
+        .all()
+    )
+    completed_trainings_count = len(completed_training_rows)
+    verified_learning_seconds_total = sum(
+        int((row.payload or {}).get("total_learning_seconds") or 0) for row in completed_training_rows
+    )
+    profile_growth_index = None
+    if isinstance(ai.get("profile_growth_index"), (int, float)):
+        profile_growth_index = round(float(ai["profile_growth_index"]), 2)
     return {
         "welcome_name": user.full_name,
         "profile_completion_pct": round((filled / total_fields) * 100, 2),
         "skill_strength_score": skill_score,
         "skill_gap_score": gap_score,
+        "weighted_gap_impact_score": weighted_gap_score,
         "active_trainings": active_trainings,
         "actively_learning_now": actively_learning,
         "notifications_count": len(notifications),
         "assigned_projects_count": assigned_projects_count,
         "active_assigned_projects": active_assigned_projects,
+        "completed_trainings_count": completed_trainings_count,
+        "verified_learning_hours": round(verified_learning_seconds_total / 3600.0, 2),
+        "profile_growth_index": profile_growth_index,
     }
 
 
@@ -428,7 +447,7 @@ def add_employee_skill(
 ) -> dict:
     if user.role != UserRole.employee:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
-    skill_name = str(payload.get("skill") or "").strip()
+    skill_name = normalize_skill_name(str(payload.get("skill") or "").strip())
     level = int(payload.get("level") or 1)
     if not skill_name:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Skill is required")
@@ -514,7 +533,7 @@ def submit_self_assessment(
 ) -> dict:
     if user.role != UserRole.employee:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
-    skill = str(payload.get("skill") or "").strip().lower()
+    skill = normalize_skill_name(str(payload.get("skill") or "").strip())
     self_score = int(payload.get("self_score") or 0)
     confidence = int(payload.get("confidence") or 0)
     years = float(payload.get("years") or 0)
@@ -553,7 +572,7 @@ def training_recommendations(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
     profile = _employee_profile_or_404(db, user.id)
     cv_extract = profile.cv_extract or {}
-    cv_skills = {str(s).strip().lower() for s in (cv_extract.get("skills") or []) if str(s).strip()}
+    cv_skills = {normalize_skill_name(str(s)) for s in (cv_extract.get("skills") or []) if str(s).strip()}
     cert_text = " ".join([str(c) for c in (cv_extract.get("certifications") or [])]).lower()
     source_weight = {"manager": 1.0, "cv": 0.9, "ai": 0.75, "self": 0.65}
     skill_source_map = {}
@@ -564,23 +583,24 @@ def training_recommendations(
         .all()
     )
     for name, source in rows:
-        skill_source_map[str(name).strip().lower()] = str(source.value if hasattr(source, "value") else source)
+        skill_source_map[normalize_skill_name(str(name))] = str(source.value if hasattr(source, "value") else source)
     gaps_payload = my_skill_gaps(db=db, user=user)
     recs = []
     for g in gaps_payload.get("gaps", []):
         if g.get("gap", 0) <= 0:
             continue
-        skill = str(g.get("skill") or "").strip().lower()
+        skill = normalize_skill_name(str(g.get("skill") or ""))
         gap = float(g.get("gap") or 0)
+        w_imp = float(g.get("weighted_gap_impact") or 0)
         source = skill_source_map.get(skill, "self")
         evidence_confidence = source_weight.get(source, 0.65)
         cert_relevance = 1.0 if skill and skill in cert_text else 0.0
         cv_relevance = 1.0 if skill in cv_skills else 0.0
         projected_gap_reduction_pct = round(min(95.0, 35 + (gap * 18) + (cert_relevance * 12) + (cv_relevance * 8)), 1)
         overall = (0.55 * evidence_confidence) + (0.25 * cv_relevance) + (0.2 * cert_relevance)
-        match_pct = round(min(99.0, 60 + gap * 7 + overall * 18), 1)
+        match_pct = round(min(99.0, 60 + gap * 7 + w_imp * 2.5 + overall * 18), 1)
         rationale = []
-        rationale.append(f"Gap {gap:.1f} in {skill}.")
+        rationale.append(f"Gap {gap:.1f} in {skill} (weighted impact {w_imp:.2f}).")
         rationale.append(f"Evidence source: {source}.")
         if cv_relevance:
             rationale.append("Skill found in CV.")

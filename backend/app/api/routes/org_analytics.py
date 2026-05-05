@@ -11,22 +11,11 @@ from app.models.cv_document import CvDocument
 from app.models.skill import Skill
 from app.models.user import AccountStatus, User, UserRole
 from app.models.user_skill import UserSkill
+from app.services.required_skill_profile import required_skill_profile_with_weights
+from app.services.skill_normalization import normalize_skill_level_map
 
 
 router = APIRouter()
-
-
-def _required_skills_for_user(user: User) -> dict[str, int]:
-    # Same deterministic rule-set as employee analytics, but used for aggregations.
-    base: dict[str, int] = {user.primary_skill.lower(): 3, "communication": 2, "project management": 1}
-    jt = user.job_title.lower()
-    if "data" in jt or "analyst" in jt:
-        base.update({"python": 3, "sql": 3, "pandas": 2, "machine learning": 2})
-    if "engineer" in jt or "developer" in jt:
-        base.update({"git": 2, "docker": 1, "sql": 2})
-    if "manager" in jt:
-        base.update({"agile": 2, "jira": 2})
-    return base
 
 
 @router.get("/org/skills/distribution")
@@ -64,21 +53,29 @@ def org_top_skill_gaps(
         .filter(UserSkill.user_id.in_([u.id for u in users]))
         .all()
     )
-    current_map: dict[str, dict[str, int]] = {}
+    current_raw: dict[str, dict[str, int]] = {}
     for user_id, skill_name, level in skill_rows:
-        current_map.setdefault(str(user_id), {})[skill_name] = int(level)
+        current_raw.setdefault(str(user_id), {})[skill_name] = int(level)
+    current_map = {uid: normalize_skill_level_map(raw) for uid, raw in current_raw.items()}
 
     gap_totals: dict[str, int] = {}
+    weighted_totals: dict[str, float] = {}
     for u in users:
-        required = _required_skills_for_user(u)
+        required, wts = required_skill_profile_with_weights(u)
         current = current_map.get(str(u.id), {})
-        gaps = compute_skill_gaps(current=current, required=required, confidence_base=0.65)
+        gaps = compute_skill_gaps(current=current, required=required, importance_weights=wts, confidence_base=0.65)
         for g in gaps:
             if g.gap > 0:
                 gap_totals[g.skill] = gap_totals.get(g.skill, 0) + int(g.gap)
+                weighted_totals[g.skill] = weighted_totals.get(g.skill, 0.0) + float(g.weighted_gap_impact)
 
-    top = sorted(gap_totals.items(), key=lambda x: x[1], reverse=True)[:20]
-    return {"top_gaps": [{"skill": s, "total_gap": int(v)} for (s, v) in top]}
+    top = sorted(weighted_totals.items(), key=lambda x: x[1], reverse=True)[:20]
+    return {
+        "top_gaps": [
+            {"skill": s, "total_gap": int(gap_totals.get(s, 0)), "weighted_gap_impact": round(v, 2)} for (s, v) in top
+        ],
+        "engine": {"version": "2.0", "prioritized_by": "weighted_gap_impact"},
+    }
 
 
 @router.get("/org/kpis")

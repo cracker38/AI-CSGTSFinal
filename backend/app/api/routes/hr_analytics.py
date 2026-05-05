@@ -14,20 +14,11 @@ from app.models.skill import Skill
 from app.models.user import AccountStatus, User, UserRole
 from app.models.user_skill import UserSkill
 
+from app.ai.gap import compute_skill_gaps
+from app.services.required_skill_profile import required_skill_profile_with_weights
+from app.services.skill_normalization import normalize_skill_level_map
+
 router = APIRouter()
-
-
-def _required_skills_for_user(user: User) -> dict[str, int]:
-    # Deterministic starter rules. Enterprise version would be role/department/project profiles.
-    base: dict[str, int] = {user.primary_skill.lower(): 3, "communication": 2, "project management": 1}
-    jt = (user.job_title or "").lower()
-    if "data" in jt or "analyst" in jt:
-        base.update({"python": 3, "sql": 3, "pandas": 2, "machine learning": 2})
-    if "engineer" in jt or "developer" in jt:
-        base.update({"git": 2, "docker": 1, "sql": 2})
-    if "manager" in jt:
-        base.update({"agile": 2, "jira": 2})
-    return base
 
 
 def _severity_from_avg_gap(avg_gap: float) -> str:
@@ -49,12 +40,14 @@ def _load_employee_skill_maps(db: Session) -> tuple[list[User], dict[str, dict[s
         .filter(UserSkill.user_id.in_([u.id for u in employees]))
         .all()
     )
-    current_map: dict[str, dict[str, int]] = {}
-    required_map: dict[str, dict[str, int]] = {}
+    current_raw: dict[str, dict[str, int]] = {}
     for user_id, skill_name, level in skill_rows:
-        current_map.setdefault(str(user_id), {})[skill_name] = int(level)
+        current_raw.setdefault(str(user_id), {})[skill_name] = int(level)
+    current_map = {uid: normalize_skill_level_map(raw) for uid, raw in current_raw.items()}
+    required_map: dict[str, dict[str, int]] = {}
     for e in employees:
-        required_map[str(e.id)] = _required_skills_for_user(e)
+        req_lv, _w = required_skill_profile_with_weights(e)
+        required_map[str(e.id)] = req_lv
     return employees, current_map, required_map
 
 
@@ -133,18 +126,23 @@ def _compute_hr_org_skill_gaps(db: Session, *, department: str | None = None) ->
         .filter(UserSkill.user_id.in_([u.id for u in employees]))
         .all()
     )
-    current_map: dict[str, dict[str, int]] = {}
+    current_raw: dict[str, dict[str, int]] = {}
     for user_id, skill_name, level in skill_rows:
-        current_map.setdefault(str(user_id), {})[skill_name] = int(level)
+        current_raw.setdefault(str(user_id), {})[skill_name] = int(level)
+    current_map = {uid: normalize_skill_level_map(raw) for uid, raw in current_raw.items()}
 
     required_totals: dict[str, int] = {}
     available_totals: dict[str, int] = {}
+    weighted_impact_totals: dict[str, float] = {}
     for u in employees:
-        required = _required_skills_for_user(u)
+        required, wts = required_skill_profile_with_weights(u)
         current = current_map.get(str(u.id), {})
         for skill, req_level in required.items():
             required_totals[skill] = required_totals.get(skill, 0) + int(req_level)
             available_totals[skill] = available_totals.get(skill, 0) + int(current.get(skill, 0))
+        for g in compute_skill_gaps(current=current, required=required, importance_weights=wts, confidence_base=0.65):
+            if g.gap > 0:
+                weighted_impact_totals[g.skill] = weighted_impact_totals.get(g.skill, 0.0) + float(g.weighted_gap_impact)
 
     rows: list[dict] = []
     sev = {"HIGH": 0, "MEDIUM": 0, "LOW": 0}
@@ -161,10 +159,11 @@ def _compute_hr_org_skill_gaps(db: Session, *, department: str | None = None) ->
                 "available": int(available_total),
                 "gap": int(gap),
                 "severity": severity,
+                "weighted_gap_impact": round(weighted_impact_totals.get(skill, 0.0), 2),
             }
         )
 
-    rows.sort(key=lambda r: (r["gap"], r["skill"]), reverse=True)
+    rows.sort(key=lambda r: (r.get("weighted_gap_impact", 0), r["gap"], r["skill"]), reverse=True)
     return {
         "scope": {"department": department, "role_scope": "employee"},
         "users_in_scope": len(employees),
@@ -172,6 +171,8 @@ def _compute_hr_org_skill_gaps(db: Session, *, department: str | None = None) ->
         "rows": rows[:200],
         "severity_breakdown": sev,
         "gap_score_sum": int(sum(r["gap"] for r in rows)),
+        "weighted_gap_impact_sum": round(sum(r.get("weighted_gap_impact", 0) for r in rows), 2),
+        "engine": {"version": "2.0", "normalized_skills": True, "weighted_gaps": True},
     }
 
 
@@ -200,17 +201,19 @@ def hr_skill_gaps_by_department(
         .filter(UserSkill.user_id.in_([u.id for u in employees]))
         .all()
     )
-    current_map: dict[str, dict[str, int]] = {}
+    current_raw: dict[str, dict[str, int]] = {}
     for user_id, skill_name, level in skill_rows:
-        current_map.setdefault(str(user_id), {})[skill_name] = int(level)
+        current_raw.setdefault(str(user_id), {})[skill_name] = int(level)
+    current_map = {uid: normalize_skill_level_map(raw) for uid, raw in current_raw.items()}
 
     dept_gap: dict[str, int] = {}
     for u in employees:
-        required = _required_skills_for_user(u)
+        required, weights = required_skill_profile_with_weights(u)
         current = current_map.get(str(u.id), {})
         total_gap = 0
-        for skill, req_level in required.items():
-            total_gap += max(0, int(req_level) - int(current.get(skill, 0)))
+        for g in compute_skill_gaps(current=current, required=required, importance_weights=weights, confidence_base=0.65):
+            if g.gap > 0:
+                total_gap += int(g.gap)
         dept = u.department or "Unknown"
         dept_gap[dept] = dept_gap.get(dept, 0) + int(total_gap)
 
