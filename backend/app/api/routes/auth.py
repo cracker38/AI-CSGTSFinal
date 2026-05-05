@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -33,23 +34,60 @@ from app.services.users import authenticate_user, change_password
 
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
+
+
+def _audit_safe(
+    db: Session,
+    request: Request,
+    *,
+    actor_user_id: UUID | None,
+    action: str,
+    entity_type: str,
+    entity_id: str,
+    meta: dict | None = None,
+) -> None:
+    """Never fail the auth flow because audit logging failed (common cause of opaque HTTP 500 on login)."""
+    try:
+        write_audit_log(
+            db,
+            request=request,
+            actor_user_id=actor_user_id,
+            action=action,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            meta=meta or {},
+        )
+    except Exception:
+        logger.exception("audit log failed (action=%s entity_type=%s entity_id=%s)", action, entity_type, entity_id)
 
 
 def _send_login_otp(db: Session, *, user: User, request: Request, action: str) -> LoginResponse:
-    otp_row, otp_code = create_login_otp(db, user_id=user.id)
+    # Read attributes before create_login_otp commits (expire_on_commit can expire this instance).
+    user_id = user.id
+    role_value = user.role.value
+    email_addr = user.email
+    otp_row, otp_code = create_login_otp(db, user_id=user_id)
     try:
-        send_login_otp_email(to_email=user.email, otp_code=otp_code)
-    except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to send OTP email: {e}")
+        send_login_otp_email(to_email=email_addr, otp_code=otp_code)
+    except Exception:
+        logger.exception("OTP email delivery failed for user_id=%s email=%s", user_id, email_addr)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "Login verification email could not be sent. "
+                "Check SMTP/Resend settings and network access."
+            ),
+        )
 
-    write_audit_log(
+    _audit_safe(
         db,
-        request=request,
-        actor_user_id=user.id,
+        request,
+        actor_user_id=user_id,
         action=action,
         entity_type="user",
-        entity_id=str(user.id),
-        meta={"role": user.role.value, "otp_request_id": str(otp_row.id)},
+        entity_id=str(user_id),
+        meta={"role": role_value, "otp_request_id": str(otp_row.id)},
     )
     return LoginResponse(requires_otp=True, otp_request_id=str(otp_row.id))
 
@@ -64,9 +102,9 @@ def ping() -> dict:
 def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)) -> LoginResponse:
     user = authenticate_user(db, email=payload.email, password=payload.password)
     if not user:
-        write_audit_log(
+        _audit_safe(
             db,
-            request=request,
+            request,
             actor_user_id=None,
             action="auth.login_failed",
             entity_type="user",
@@ -76,24 +114,6 @@ def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
     if user.status != AccountStatus.active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account not active")
-
-    if not settings.login_require_otp:
-        token = create_access_token(subject=str(user.id), role=user.role.value)
-        write_audit_log(
-            db,
-            request=request,
-            actor_user_id=user.id,
-            action="auth.login",
-            entity_type="user",
-            entity_id=str(user.id),
-            meta={"role": user.role.value, "otp_bypassed": True},
-        )
-        return LoginResponse(
-            access_token=token,
-            role=user.role.value,
-            must_change_password=user.must_change_password,
-            requires_otp=False,
-        )
 
     return _send_login_otp(db, user=user, request=request, action="auth.login_otp_sent")
 
@@ -113,9 +133,9 @@ def verify_otp(payload: VerifyOtpRequest, request: Request, db: Session = Depend
 
     ok = verify_login_otp(db, otp_id=otp_id, user_id=user.id, otp_code=payload.otp_code)
     if not ok:
-        write_audit_log(
+        _audit_safe(
             db,
-            request=request,
+            request,
             actor_user_id=user.id,
             action="auth.login_otp_failed",
             entity_type="user",
@@ -125,9 +145,9 @@ def verify_otp(payload: VerifyOtpRequest, request: Request, db: Session = Depend
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired OTP")
 
     token = create_access_token(subject=str(user.id), role=user.role.value)
-    write_audit_log(
+    _audit_safe(
         db,
-        request=request,
+        request,
         actor_user_id=user.id,
         action="auth.login",
         entity_type="user",
@@ -191,9 +211,9 @@ def change_password_endpoint(
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
-    write_audit_log(
+    _audit_safe(
         db,
-        request=request,
+        request,
         actor_user_id=user.id,
         action="auth.change_password",
         entity_type="user",

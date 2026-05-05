@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -38,10 +39,23 @@ class Settings(BaseSettings):
     resend_api_key: str = ""
     resend_from_email: str = ""
     otp_expire_minutes: int = 10
+    # OTP is mandatory for login.
     login_require_otp: bool = True
 
     # Training: heartbeat gap (seconds) before an open learning session auto-pauses.
     training_stale_heartbeat_seconds: int = 30 * 60
+
+    @field_validator("database_url", mode="after")
+    @classmethod
+    def resolve_sqlite_path(cls, v: str) -> str:
+        """Anchor sqlite:///./*.db to the backend folder (next to .env), not the shell cwd."""
+        prefix = "sqlite:///./"
+        if v.startswith(prefix):
+            backend_root = Path(__file__).resolve().parents[2]
+            filename = v[len(prefix) :]
+            absolute = (backend_root / filename).resolve()
+            return f"sqlite:///{absolute.as_posix()}"
+        return v
 
     @property
     def cors_origins_list(self) -> list[str]:
