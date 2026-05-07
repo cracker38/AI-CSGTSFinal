@@ -12,17 +12,12 @@ _W_COMMUNICATION = 1.25
 _W_BASELINE_PM = 1.0
 
 
-def required_skill_profile_with_weights(user: User) -> tuple[dict[str, int], dict[str, float]]:
-    """
-    Canonical required levels + per-skill weights for weighted gap prioritization.
-
-    Levels are ints 1–5-ish; starter rules documented in-code for MVP.
-    Enterprise: replace with role/department/project profile tables.
-    """
+def required_skill_levels_for(primary_skill: str | None, job_title: str | None) -> tuple[dict[str, int], dict[str, float]]:
+    """Required skill targets + weights for an arbitrary role lens (e.g., career target vs. HR job title)."""
     levels: dict[str, int] = {}
     weights: dict[str, float] = {}
 
-    ps = normalize_skill_name(user.primary_skill or "")
+    ps = normalize_skill_name(primary_skill or "")
     if ps:
         levels[ps] = max(levels.get(ps, 0), 3)
         weights[ps] = max(weights.get(ps, 0), _W_PRIMARY_DOMAIN)
@@ -33,7 +28,7 @@ def required_skill_profile_with_weights(user: User) -> tuple[dict[str, int], dic
     levels["project management"] = max(levels.get("project management", 0), 1)
     weights["project management"] = max(weights.get("project management", 0), _W_BASELINE_PM)
 
-    jt = (user.job_title or "").lower()
+    jt = (job_title or "").lower()
     extras: dict[str, int] = {}
     if "data" in jt or "analyst" in jt:
         extras.update({"python": 3, "sql": 3, "pandas": 2, "machine learning": 2})
@@ -47,7 +42,16 @@ def required_skill_profile_with_weights(user: User) -> tuple[dict[str, int], dic
         if not ck:
             continue
         levels[ck] = max(levels.get(ck, 0), int(lvl))
-        # Do not downgrade primary/domain weight if this skill is also primary
-        weights[ck] = max(weights.get(ck, 0), _ROLE_STACK)
+        weights[ck] = max(weights.get(ck, 0), _W_ROLE_STACK)
 
     return levels, weights
+
+
+def required_skill_profile_with_weights(user: User) -> tuple[dict[str, int], dict[str, float]]:
+    """
+    Canonical required levels + per-skill weights for weighted gap prioritization.
+
+    Levels are ints 1–5-ish; starter rules documented in-code for MVP.
+    Enterprise: replace with role/department/project profile tables.
+    """
+    return required_skill_levels_for(user.primary_skill, user.job_title)

@@ -1,13 +1,13 @@
 export function dashboardPathForRole(role) {
   switch (role) {
     case "employee":
-      return "/app/employee";
+      return "/app/employee?section=home";
     case "manager":
-      return "/app/manager";
+      return "/app/manager?section=home";
     case "hr_admin":
-      return "/app/hr";
+      return "/app/hr?section=home";
     case "system_admin":
-      return "/app/admin";
+      return "/app/admin?section=users";
     default:
       return "/app";
   }

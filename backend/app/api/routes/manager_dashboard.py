@@ -221,33 +221,39 @@ def skills_gaps(
 
     team = _team_query(db, manager.id).all()
     team_ids = [u.id for u in team]
+    team_size = max(len(team_ids), 1)
     current_rows = (
-        db.query(Skill.name, UserSkill.level)
+        db.query(UserSkill.user_id, Skill.name, UserSkill.level)
         .join(UserSkill, UserSkill.skill_id == Skill.id)
         .filter(UserSkill.user_id.in_(team_ids) if team_ids else False)
         .all()
     )
-    levels_by_skill: dict[str, list[int]] = defaultdict(list)
-    for skill_name, lvl in current_rows:
+    # Canonical skill → max level per employee (matches gap analysis normalization).
+    by_member_skill: dict[uuid.UUID, dict[str, int]] = defaultdict(dict)
+    for uid, skill_name, lvl in current_rows:
         key = normalize_skill_name(skill_name)
         if key:
-            levels_by_skill[key].append(int(lvl))
+            m = by_member_skill[uid]
+            m[key] = max(m.get(key, 0), int(lvl))
 
     items = []
     for skill_name, required in required_by_skill.items():
-        current_avg = sum(levels_by_skill.get(skill_name, [0])) / max(1, len(levels_by_skill.get(skill_name, [])))
-        gap = round(required - current_avg, 2)
+        sum_levels = sum(by_member_skill[uid].get(skill_name, 0) for uid in team_ids)
+        team_avg = round(sum_levels / team_size, 2)
+        gap = round(float(required) - team_avg, 2)
         severity = "critical" if gap >= 2 else "moderate" if gap > 0 else "good"
+        positive_gap_sum = sum(max(0, int(required) - by_member_skill[uid].get(skill_name, 0)) for uid in team_ids)
         items.append(
             {
                 "skill": skill_name,
                 "required": round(required, 2),
-                "current": round(current_avg, 2),
+                "current": team_avg,
                 "gap": gap,
                 "severity": severity,
+                "team_positive_gap_sum": int(positive_gap_sum),
             }
         )
-    return sorted(items, key=lambda x: x["gap"], reverse=True)
+    return sorted(items, key=lambda x: (x["team_positive_gap_sum"], x["gap"]), reverse=True)
 
 
 class ProjectSkillInput(BaseModel):

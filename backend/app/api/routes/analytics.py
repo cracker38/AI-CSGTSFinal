@@ -5,8 +5,9 @@ from datetime import date, datetime, timezone
 
 import os
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.ai.gap import compute_skill_gaps, gap_payload_from_items, recommend_actions
@@ -15,6 +16,7 @@ from app.db.session import get_db
 from app.models.employee_profile import EmployeeProfile
 from app.models.hr_action import HrAction
 from app.models.manager_project import EmployeeProjectDailyReport, ManagerProject, ProjectAssignment, ProjectStatus
+from app.models.master_data import JobTitleCatalog
 from app.models.skill import Skill
 from app.models.user import User, UserRole
 from app.models.user_skill import SkillSource, UserSkill
@@ -30,6 +32,8 @@ from app.services.training_assignments import (
     training_session_heartbeat,
 )
 from app.services.training_materials import get_material_download_path
+from app.services.cv import save_and_process_cv
+from app.services.employee_intel import build_employee_dashboard_intel, build_story_bullets, sync_ai_cv_story
 from app.services.required_skill_profile import required_skill_profile_with_weights
 from app.services.skill_normalization import normalize_skill_level_map, normalize_skill_name
 
@@ -37,11 +41,28 @@ from app.services.skill_normalization import normalize_skill_level_map, normaliz
 router = APIRouter()
 
 
-def _employee_profile_or_404(db: Session, user_id) -> EmployeeProfile:
-    profile = db.query(EmployeeProfile).filter(EmployeeProfile.user_id == user_id).one_or_none()
-    if not profile:
+def _employee_profile_or_ensure(db: Session, user: User) -> EmployeeProfile:
+    """
+    Employees must always have an employee_profiles row for analytics payloads.
+    Some legacy inserts only created User rows — auto-materialize missing profiles.
+    """
+    profile = db.query(EmployeeProfile).filter(EmployeeProfile.user_id == user.id).one_or_none()
+    if profile:
+        return profile
+    if user.role != UserRole.employee:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee profile not found")
-    return profile
+    profile = EmployeeProfile(user_id=user.id, headline=None, cv_extract={}, ai_profile={})
+    db.add(profile)
+    try:
+        db.commit()
+        db.refresh(profile)
+        return profile
+    except IntegrityError:
+        db.rollback()
+        profile = db.query(EmployeeProfile).filter(EmployeeProfile.user_id == user.id).one_or_none()
+        if profile:
+            return profile
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not initialize employee profile")
 
 
 def _assigned_project_or_404(db: Session, employee_id, project_id: uuid.UUID) -> tuple[ManagerProject, ProjectAssignment]:
@@ -102,7 +123,7 @@ def employee_overview(
 ) -> dict:
     if user.role != UserRole.employee:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
-    profile = _employee_profile_or_404(db, user.id)
+    profile = _employee_profile_or_ensure(db, user)
     total_fields = 9
     filled = sum(
         1
@@ -196,7 +217,109 @@ def employee_overview(
         "completed_trainings_count": completed_trainings_count,
         "verified_learning_hours": round(verified_learning_seconds_total / 3600.0, 2),
         "profile_growth_index": profile_growth_index,
+        "cv_skills_detected_count": len((profile.cv_extract or {}).get("skills") or []),
+        "career_target_job_title": ai.get("target_job_title"),
+        "shortlisted_projects_count": len(ai.get("selected_project_ids") or []),
     }
+
+
+@router.get("/employee/dashboard-intel")
+def employee_dashboard_intel(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    if user.role != UserRole.employee:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    profile = _employee_profile_or_ensure(db, user)
+    return build_employee_dashboard_intel(db, user, profile)
+
+
+@router.put("/employee/career-preferences")
+def put_employee_career_preferences(
+    payload: dict,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    if user.role != UserRole.employee:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+
+    profile = _employee_profile_or_ensure(db, user)
+    ai_existing = dict(profile.ai_profile or {})
+
+    if "target_job_title" in payload:
+        raw_target = payload.get("target_job_title")
+        if raw_target is None:
+            target = None
+        elif isinstance(raw_target, str):
+            trimmed = raw_target.strip()
+            target = trimmed[:120] if trimmed else None
+        else:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="target_job_title must be a string or null")
+
+        if target:
+            hit = (
+                db.query(JobTitleCatalog.id)
+                .filter(JobTitleCatalog.name == target, JobTitleCatalog.active.is_(True))
+                .first()
+            )
+            if not hit:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Target job title must exist in the active master job-title catalog.",
+                )
+    else:
+        target = ai_existing.get("target_job_title")
+
+    if "selected_project_ids" in payload:
+        raw_ids = payload.get("selected_project_ids") or []
+        if not isinstance(raw_ids, list):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="selected_project_ids must be a list")
+        selected: list[str] = []
+        for item in raw_ids[:24]:
+            try:
+                pu = uuid.UUID(str(item))
+            except ValueError:
+                continue
+            if db.query(ManagerProject.id).filter(ManagerProject.id == pu).first():
+                sid = str(pu)
+                if sid not in selected:
+                    selected.append(sid)
+    else:
+        selected = list(ai_existing.get("selected_project_ids") or [])
+
+    ai = dict(ai_existing)
+    ai["target_job_title"] = target
+    ai["selected_project_ids"] = selected
+    profile.ai_profile = ai
+    sync_ai_cv_story(db, profile, user)
+    db.add(profile)
+    db.commit()
+    return {"ok": True, "saved": {"target_job_title": target, "selected_project_ids": selected}}
+
+
+@router.post("/employee/cv")
+async def employee_cv_reupload(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+    cv: UploadFile = File(...),
+) -> dict:
+    if user.role != UserRole.employee:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    ctype = (cv.content_type or "").lower()
+    if ctype not in {"application/pdf", "application/octet-stream"}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="CV must be a PDF")
+    pdf_bytes = await cv.read()
+    if len(pdf_bytes) > 8 * 1024 * 1024:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="CV too large (max 8MB)")
+    upload_dir = os.path.join(os.getcwd(), "uploads")
+    save_and_process_cv(
+        db,
+        user=user,
+        original_filename=cv.filename or "cv.pdf",
+        pdf_bytes=pdf_bytes,
+        upload_dir=upload_dir,
+    )
+    return {"ok": True}
 
 
 @router.get("/employee/projects")
@@ -368,8 +491,11 @@ def employee_profile(
 ) -> dict:
     if user.role != UserRole.employee:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
-    profile = _employee_profile_or_404(db, user.id)
+    profile = _employee_profile_or_ensure(db, user)
     cv_extract = profile.cv_extract or {}
+    ai = profile.ai_profile or {}
+    nlp = cv_extract.get("nlp") or {}
+    story_h, story_sub, analysis_bullets = build_story_bullets(db, user, profile)
     return {
         "basic": {
             "name": user.full_name,
@@ -381,6 +507,19 @@ def employee_profile(
             "experience_level": user.experience_level,
             "primary_skill": user.primary_skill,
             "headline": profile.headline or "",
+        },
+        "career_preferences": {
+            "target_job_title": ai.get("target_job_title"),
+            "selected_project_ids": list(ai.get("selected_project_ids") or []),
+        },
+        "cv_intel": {
+            "story_headline": story_h,
+            "story_subtitle": story_sub,
+            "analysis_bullets": analysis_bullets,
+            "suggested_skills": (ai.get("suggested_skills") or [])[:15],
+            "primary_skill_validated": ai.get("primary_skill_validated"),
+            "parser_confidence": ai.get("confidence"),
+            "pipeline": ai.get("nlp_pipeline") or nlp.get("pipeline"),
         },
         "cv_preview": {
             "skills": (cv_extract.get("skills") or [])[:20],
@@ -399,7 +538,7 @@ def update_employee_profile(
 ) -> dict:
     if user.role != UserRole.employee:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
-    profile = _employee_profile_or_404(db, user.id)
+    profile = _employee_profile_or_ensure(db, user)
     basic = payload.get("basic") or {}
     allowed_user_fields = {"phone_number", "country", "primary_skill"}
     for key in allowed_user_fields:
@@ -520,7 +659,7 @@ def get_self_assessment(
 ) -> list[dict]:
     if user.role != UserRole.employee:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
-    profile = _employee_profile_or_404(db, user.id)
+    profile = _employee_profile_or_ensure(db, user)
     ai = profile.ai_profile or {}
     return list(ai.get("self_assessments") or [])
 
@@ -541,7 +680,7 @@ def submit_self_assessment(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid self assessment input")
     manager_score = int(payload.get("manager_score") or self_score)
     final_skill_score = round((self_score + manager_score) / 2, 2)
-    profile = _employee_profile_or_404(db, user.id)
+    profile = _employee_profile_or_ensure(db, user)
     ai = dict(profile.ai_profile or {})
     assessments = list(ai.get("self_assessments") or [])
     assessments = [a for a in assessments if a.get("skill") != skill]
@@ -570,7 +709,7 @@ def training_recommendations(
 ) -> list[dict]:
     if user.role != UserRole.employee:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
-    profile = _employee_profile_or_404(db, user.id)
+    profile = _employee_profile_or_ensure(db, user)
     cv_extract = profile.cv_extract or {}
     cv_skills = {normalize_skill_name(str(s)) for s in (cv_extract.get("skills") or []) if str(s).strip()}
     cert_text = " ".join([str(c) for c in (cv_extract.get("certifications") or [])]).lower()
@@ -849,7 +988,7 @@ def get_goals(
 ) -> list[dict]:
     if user.role != UserRole.employee:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
-    profile = _employee_profile_or_404(db, user.id)
+    profile = _employee_profile_or_ensure(db, user)
     return list((profile.ai_profile or {}).get("employee_goals") or [])
 
 
@@ -865,7 +1004,7 @@ def save_goal(
     status_value = str(payload.get("status") or "Not started")
     if not title:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Goal title required")
-    profile = _employee_profile_or_404(db, user.id)
+    profile = _employee_profile_or_ensure(db, user)
     ai = dict(profile.ai_profile or {})
     goals = list(ai.get("employee_goals") or [])
     goals = [g for g in goals if g.get("title") != title]
@@ -884,7 +1023,7 @@ def notifications(
 ) -> list[dict]:
     if user.role != UserRole.employee:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
-    profile = _employee_profile_or_404(db, user.id)
+    profile = _employee_profile_or_ensure(db, user)
     ai = dict(profile.ai_profile or {})
     saved = list(ai.get("employee_notifications") or [])
     if saved:

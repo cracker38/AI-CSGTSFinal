@@ -1,173 +1,175 @@
-from __future__ import annotations
-
-import hashlib
-import os
-import re
-import uuid
-from datetime import datetime, timezone
-
-from pypdf import PdfReader
-from sqlalchemy.orm import Session
-
-from app.ai.cv_skill_nlp import (
-    document_nlp_confidence,
-    extract_skill_mentions,
-    mentions_to_extract_dicts,
-)
-from app.models.cv_document import CvDocument
-from app.models.employee_profile import EmployeeProfile
-from app.models.skill import Skill
-from app.models.user import User
-from app.models.user_skill import SkillSource, UserSkill
-from app.services.skill_normalization import normalize_skill_name
-
-
-def _sha256_bytes(b: bytes) -> str:
-    return hashlib.sha256(b).hexdigest()
-
-
-def _extract_text_from_pdf(pdf_path: str) -> tuple[str, dict]:
-    """Return full text and metadata; never raises — callers use flags for empty/error PDFs."""
-    meta: dict = {"pdf_ok": True, "pdf_error": None, "pages": 0, "empty_text": False}
-    try:
-        reader = PdfReader(pdf_path)
-        meta["pages"] = len(reader.pages)
-        parts: list[str] = []
-        for page in reader.pages:
-            try:
-                parts.append(page.extract_text() or "")
-            except Exception:
-                parts.append("")
-        raw = "\n".join(parts)
-        if not raw.strip():
-            meta["empty_text"] = True
-        return raw, meta
-    except Exception as e:
-        meta["pdf_ok"] = False
-        meta["pdf_error"] = str(e)[:500]
-        return "", meta
-
-
-def _normalize_text(text: str) -> str:
-    return re.sub(r"\s+", " ", text).strip()
-
-
-def _level_from_nlp_confidence(confidence: float) -> int:
-    """Map calibrated mention confidence to inventory level (1–5 scale)."""
-    if confidence >= 0.88:
-        return 4
-    if confidence >= 0.78:
-        return 3
-    return 2
-
-
-def _extract_education(text: str) -> list[str]:
-    # Heuristic: capture lines containing degree keywords.
-    lines = [l.strip() for l in text.splitlines() if l.strip()]
-    degree_words = ("bsc", "msc", "phd", "bachelor", "master", "degree", "university", "college")
-    edu = [l for l in lines if any(w in l.lower() for w in degree_words)]
-    return edu[:10]
-
-
-def _extract_certifications(text: str) -> list[str]:
-    lines = [l.strip() for l in text.splitlines() if l.strip()]
-    cert_words = ("certified", "certification", "certificate", "coursera", "udemy", "aws", "azure", "google")
-    certs = [l for l in lines if any(w in l.lower() for w in cert_words)]
-    return certs[:15]
-
-
-def _extract_experience_years(text: str) -> int | None:
-    m = re.search(r"(\d{1,2})\+?\s+years? of experience", text.lower())
-    if not m:
-        return None
-    try:
-        return int(m.group(1))
-    except ValueError:
-        return None
-
-
-def save_and_process_cv(
-    db: Session,
-    *,
-    user: User,
-    original_filename: str,
-    pdf_bytes: bytes,
-    upload_dir: str,
-) -> CvDocument:
-    os.makedirs(upload_dir, exist_ok=True)
-    sha = _sha256_bytes(pdf_bytes)
-    stored_name = f"{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex}.pdf"
-    stored_path = os.path.join(upload_dir, stored_name)
-    with open(stored_path, "wb") as f:
-        f.write(pdf_bytes)
-
-    raw_text, pdf_meta = _extract_text_from_pdf(stored_path)
-    mentions = extract_skill_mentions(raw_text)
-    skills = [m.canonical for m in mentions]
-    skills_detail = mentions_to_extract_dicts(mentions)
-    doc_conf = document_nlp_confidence(mentions, len(raw_text))
-    section_hits = any(m.get("in_skills_section") for m in skills_detail)
-
-    education = _extract_education(raw_text)
-    certifications = _extract_certifications(raw_text)
-    years_exp = _extract_experience_years(raw_text)
-
-    extract = {
-        "skills": skills,
-        "skills_detail": skills_detail,
-        "nlp": {
-            "pipeline": "taxonomy_regex_v1",
-            "document_confidence": doc_conf,
-            "skills_section_detected": section_hits,
-            "char_count": len(raw_text),
-            "mention_count": len(mentions),
-        },
-        "pdf": pdf_meta,
-        "education": education,
-        "certifications": certifications,
-        "experience_years": years_exp,
-        "text_preview": _normalize_text(raw_text)[:2000],
-    }
-
-    doc = CvDocument(
-        user_id=user.id,
-        original_filename=original_filename,
-        stored_path=stored_path,
-        sha256=sha,
-        extract=extract,
-    )
-    db.add(doc)
-
-    # Upsert employee profile enrichment.
-    profile = db.query(EmployeeProfile).filter(EmployeeProfile.user_id == user.id).one_or_none()
-    if profile:
-        profile.cv_extract = extract
-        # AI profile enrichment (starter rules)
-        ai_profile = dict(profile.ai_profile or {})
-        pk = normalize_skill_name(user.primary_skill)
-        ai_profile["suggested_skills"] = [s for s in skills if s and s != pk][:15]
-        ai_profile["primary_skill_validated"] = pk in skills if pk else False
-        ai_profile["confidence"] = doc_conf if skills else (0.25 if raw_text.strip() else 0.15)
-        ai_profile["nlp_pipeline"] = "taxonomy_regex_v1"
-        profile.ai_profile = ai_profile
-
-    conf_by_skill = {m.canonical: m.confidence for m in mentions}
-
-    # Persist skills into skill inventory (canonical naming).
-    for s in skills:
-        cn = normalize_skill_name(s)
-        if not cn:
-            continue
-        skill = db.query(Skill).filter(Skill.name == cn).one_or_none()
-        if not skill:
-            skill = Skill(name=cn)
-            db.add(skill)
-            db.flush()
-        link = db.query(UserSkill).filter(UserSkill.user_id == user.id, UserSkill.skill_id == skill.id).one_or_none()
-        if not link:
-            lvl = _level_from_nlp_confidence(conf_by_skill.get(cn, 0.7))
-            db.add(UserSkill(user_id=user.id, skill_id=skill.id, level=lvl, source=SkillSource.cv))
-
-    db.commit()
-    db.refresh(doc)
-    return doc
+from __future__ import annotations
+
+import hashlib
+import os
+import re
+import uuid
+from datetime import datetime, timezone
+
+from pypdf import PdfReader
+from sqlalchemy.orm import Session
+
+from app.ai.cv_skill_nlp import (
+    document_nlp_confidence,
+    extract_skill_mentions,
+    mentions_to_extract_dicts,
+)
+from app.models.cv_document import CvDocument
+from app.models.employee_profile import EmployeeProfile
+from app.models.skill import Skill
+from app.models.user import User
+from app.models.user_skill import SkillSource, UserSkill
+from app.services.employee_intel import sync_ai_cv_story
+from app.services.skill_normalization import normalize_skill_name
+
+
+def _sha256_bytes(b: bytes) -> str:
+    return hashlib.sha256(b).hexdigest()
+
+
+def _extract_text_from_pdf(pdf_path: str) -> tuple[str, dict]:
+    """Return full text and metadata; never raises — callers use flags for empty/error PDFs."""
+    meta: dict = {"pdf_ok": True, "pdf_error": None, "pages": 0, "empty_text": False}
+    try:
+        reader = PdfReader(pdf_path)
+        meta["pages"] = len(reader.pages)
+        parts: list[str] = []
+        for page in reader.pages:
+            try:
+                parts.append(page.extract_text() or "")
+            except Exception:
+                parts.append("")
+        raw = "\n".join(parts)
+        if not raw.strip():
+            meta["empty_text"] = True
+        return raw, meta
+    except Exception as e:
+        meta["pdf_ok"] = False
+        meta["pdf_error"] = str(e)[:500]
+        return "", meta
+
+
+def _normalize_text(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _level_from_nlp_confidence(confidence: float) -> int:
+    """Map calibrated mention confidence to inventory level (1–5 scale)."""
+    if confidence >= 0.88:
+        return 4
+    if confidence >= 0.78:
+        return 3
+    return 2
+
+
+def _extract_education(text: str) -> list[str]:
+    # Heuristic: capture lines containing degree keywords.
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    degree_words = ("bsc", "msc", "phd", "bachelor", "master", "degree", "university", "college")
+    edu = [l for l in lines if any(w in l.lower() for w in degree_words)]
+    return edu[:10]
+
+
+def _extract_certifications(text: str) -> list[str]:
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    cert_words = ("certified", "certification", "certificate", "coursera", "udemy", "aws", "azure", "google")
+    certs = [l for l in lines if any(w in l.lower() for w in cert_words)]
+    return certs[:15]
+
+
+def _extract_experience_years(text: str) -> int | None:
+    m = re.search(r"(\d{1,2})\+?\s+years? of experience", text.lower())
+    if not m:
+        return None
+    try:
+        return int(m.group(1))
+    except ValueError:
+        return None
+
+
+def save_and_process_cv(
+    db: Session,
+    *,
+    user: User,
+    original_filename: str,
+    pdf_bytes: bytes,
+    upload_dir: str,
+) -> CvDocument:
+    os.makedirs(upload_dir, exist_ok=True)
+    sha = _sha256_bytes(pdf_bytes)
+    stored_name = f"{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex}.pdf"
+    stored_path = os.path.join(upload_dir, stored_name)
+    with open(stored_path, "wb") as f:
+        f.write(pdf_bytes)
+
+    raw_text, pdf_meta = _extract_text_from_pdf(stored_path)
+    mentions = extract_skill_mentions(raw_text)
+    skills = [m.canonical for m in mentions]
+    skills_detail = mentions_to_extract_dicts(mentions)
+    doc_conf = document_nlp_confidence(mentions, len(raw_text))
+    section_hits = any(m.get("in_skills_section") for m in skills_detail)
+
+    education = _extract_education(raw_text)
+    certifications = _extract_certifications(raw_text)
+    years_exp = _extract_experience_years(raw_text)
+
+    extract = {
+        "skills": skills,
+        "skills_detail": skills_detail,
+        "nlp": {
+            "pipeline": "taxonomy_regex_v1",
+            "document_confidence": doc_conf,
+            "skills_section_detected": section_hits,
+            "char_count": len(raw_text),
+            "mention_count": len(mentions),
+        },
+        "pdf": pdf_meta,
+        "education": education,
+        "certifications": certifications,
+        "experience_years": years_exp,
+        "text_preview": _normalize_text(raw_text)[:2000],
+    }
+
+    doc = CvDocument(
+        user_id=user.id,
+        original_filename=original_filename,
+        stored_path=stored_path,
+        sha256=sha,
+        extract=extract,
+    )
+    db.add(doc)
+
+    # Upsert employee profile enrichment.
+    profile = db.query(EmployeeProfile).filter(EmployeeProfile.user_id == user.id).one_or_none()
+    if profile:
+        profile.cv_extract = extract
+        # AI profile enrichment (starter rules)
+        ai_profile = dict(profile.ai_profile or {})
+        pk = normalize_skill_name(user.primary_skill)
+        ai_profile["suggested_skills"] = [s for s in skills if s and s != pk][:15]
+        ai_profile["primary_skill_validated"] = pk in skills if pk else False
+        ai_profile["confidence"] = doc_conf if skills else (0.25 if raw_text.strip() else 0.15)
+        ai_profile["nlp_pipeline"] = "taxonomy_regex_v1"
+        profile.ai_profile = ai_profile
+        sync_ai_cv_story(db, profile, user)
+
+    conf_by_skill = {m.canonical: m.confidence for m in mentions}
+
+    # Persist skills into skill inventory (canonical naming).
+    for s in skills:
+        cn = normalize_skill_name(s)
+        if not cn:
+            continue
+        skill = db.query(Skill).filter(Skill.name == cn).one_or_none()
+        if not skill:
+            skill = Skill(name=cn)
+            db.add(skill)
+            db.flush()
+        link = db.query(UserSkill).filter(UserSkill.user_id == user.id, UserSkill.skill_id == skill.id).one_or_none()
+        if not link:
+            lvl = _level_from_nlp_confidence(conf_by_skill.get(cn, 0.7))
+            db.add(UserSkill(user_id=user.id, skill_id=skill.id, level=lvl, source=SkillSource.cv))
+
+    db.commit()
+    db.refresh(doc)
+    return doc

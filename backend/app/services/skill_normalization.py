@@ -11,6 +11,9 @@ _SKILL_ALIASES: dict[str, str] = {
     "machine-learning": "machine learning",
     "deep learning": "deep learning",
     "dl": "deep learning",
+    "nlp models": "nlp",
+    "tensor flow": "tensorflow",
+    "sci kit learn": "scikit-learn",
     # Web / languages
     "js": "javascript",
     "ts": "typescript",

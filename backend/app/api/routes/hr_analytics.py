@@ -87,13 +87,17 @@ def hr_overview(
         or 0
     )
 
+    gap_snapshot = _compute_hr_org_skill_gaps(db, department=None)
+    gap_rows = gap_snapshot.get("rows") or []
+    skill_gap_count = sum(1 for r in gap_rows if int(r.get("gap") or 0) > 0)
+
     return {
         "total_employees": int(total_employees),
         "departments": int(departments),
         "active_projects": 0,
         "pending_approvals": int(pending_approvals),
-        "skill_gap_count": 0,  # populated by /hr/skill-gaps
-        "skill_gap_score_sum": 0,  # populated by /hr/skill-gaps
+        "skill_gap_count": int(skill_gap_count),
+        "skill_gap_score_sum": int(gap_snapshot.get("gap_score_sum") or 0),
         "training_in_progress": int(training_in_progress),
         "certifications_expiring_soon": int(expiring_soon),
         "notes": {
@@ -131,25 +135,32 @@ def _compute_hr_org_skill_gaps(db: Session, *, department: str | None = None) ->
         current_raw.setdefault(str(user_id), {})[skill_name] = int(level)
     current_map = {uid: normalize_skill_level_map(raw) for uid, raw in current_raw.items()}
 
+    # Totals for HR tables (capacity lens).
     required_totals: dict[str, int] = {}
     available_totals: dict[str, int] = {}
+    # True org shortage: sum_i max(0, req_i - cur_i). Never net surplus across people against shortage (Σreq − Σcur bug).
+    positive_gap_totals: dict[str, int] = {}
     weighted_impact_totals: dict[str, float] = {}
     for u in employees:
         required, wts = required_skill_profile_with_weights(u)
         current = current_map.get(str(u.id), {})
         for skill, req_level in required.items():
-            required_totals[skill] = required_totals.get(skill, 0) + int(req_level)
-            available_totals[skill] = available_totals.get(skill, 0) + int(current.get(skill, 0))
+            rq = int(req_level)
+            cur = int(current.get(skill, 0))
+            required_totals[skill] = required_totals.get(skill, 0) + rq
+            available_totals[skill] = available_totals.get(skill, 0) + cur
+            positive_gap_totals[skill] = positive_gap_totals.get(skill, 0) + max(0, rq - cur)
         for g in compute_skill_gaps(current=current, required=required, importance_weights=wts, confidence_base=0.65):
             if g.gap > 0:
                 weighted_impact_totals[g.skill] = weighted_impact_totals.get(g.skill, 0.0) + float(g.weighted_gap_impact)
 
     rows: list[dict] = []
     sev = {"HIGH": 0, "MEDIUM": 0, "LOW": 0}
+    n = len(employees)
     for skill, required_total in required_totals.items():
         available_total = int(available_totals.get(skill, 0))
-        gap = max(0, int(required_total) - available_total)
-        avg_gap = gap / max(1, len(employees))
+        gap = int(positive_gap_totals.get(skill, 0))
+        avg_gap = gap / max(1, n)
         severity = _severity_from_avg_gap(avg_gap)
         sev[severity] += 1
         rows.append(
@@ -157,7 +168,7 @@ def _compute_hr_org_skill_gaps(db: Session, *, department: str | None = None) ->
                 "skill": skill,
                 "required": int(required_total),
                 "available": int(available_total),
-                "gap": int(gap),
+                "gap": gap,
                 "severity": severity,
                 "weighted_gap_impact": round(weighted_impact_totals.get(skill, 0.0), 2),
             }
@@ -172,7 +183,12 @@ def _compute_hr_org_skill_gaps(db: Session, *, department: str | None = None) ->
         "severity_breakdown": sev,
         "gap_score_sum": int(sum(r["gap"] for r in rows)),
         "weighted_gap_impact_sum": round(sum(r.get("weighted_gap_impact", 0) for r in rows), 2),
-        "engine": {"version": "2.0", "normalized_skills": True, "weighted_gaps": True},
+        "engine": {
+            "version": "2.1",
+            "normalized_skills": True,
+            "weighted_gaps": True,
+            "gap_metric": "sum_per_employee_max(0, required-current); required/available columns are sums across employees",
+        },
     }
 
 

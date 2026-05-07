@@ -65,11 +65,26 @@ class SkillMention:
     in_skills_section: bool
 
 
+def _sanitize_extract_input(text: str) -> str:
+    """Normalize invisible unicode / odd spaces so NLP hits stay stable."""
+    if not text:
+        return ""
+    t = (
+        text.replace("\u00a0", " ")
+        .replace("\u200b", "")
+        .replace("\ufeff", "")
+        .replace("\u2013", "-")
+        .replace("\u2014", "-")
+    )
+    return t
+
+
 def extract_skill_mentions(text: str) -> list[SkillMention]:
     """
     Find taxonomy-backed skills with regex boundaries and section-aware confidence.
     Longer keywords are tried first so multi-word phrases win over shared substrings.
     """
+    text = _sanitize_extract_input(text)
     if not text or len(text.strip()) < 12:
         return []
 

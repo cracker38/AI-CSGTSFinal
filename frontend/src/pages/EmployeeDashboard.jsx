@@ -5,12 +5,16 @@ import {
   Button,
   Card,
   CardContent,
+  Checkbox,
   Chip,
   CircularProgress,
   Divider,
+  FormControlLabel,
   Grid,
-  MenuItem,
   LinearProgress,
+  MenuItem,
+  Paper,
+  Snackbar,
   Stack,
   Table,
   TableBody,
@@ -19,7 +23,9 @@ import {
   TableHead,
   TableRow,
   TextField,
-  Typography
+  Typography,
+  useMediaQuery,
+  useTheme
 } from "@mui/material";
 import AppShell from "../components/AppShell";
 import CourseMaterialViewerModal from "../components/CourseMaterialViewerModal";
@@ -31,6 +37,7 @@ import { getApiErrorMessage } from "../utils/apiError";
 
 const SECTIONS = [
   { key: "home", label: "Dashboard home" },
+  { key: "cvfocus", label: "Career focus & résumé" },
   { key: "profile", label: "Personal profile" },
   { key: "skills", label: "Skill inventory" },
   { key: "assessment", label: "Self-assessment" },
@@ -43,13 +50,36 @@ const SECTIONS = [
   { key: "notifications", label: "Notifications" }
 ];
 
+const SECTION_KEYS = new Set(SECTIONS.map((s) => s.key));
+
+function SectionPanel({ children }) {
+  return (
+    <Card
+      variant="outlined"
+      sx={{
+        borderRadius: 3,
+        borderColor: "divider",
+        boxShadow: "0 8px 22px rgba(0,0,0,0.06)"
+      }}
+    >
+      <CardContent sx={{ p: { xs: 1.5, sm: 2, md: 2.5 } }}>{children}</CardContent>
+    </Card>
+  );
+}
+
 export default function EmployeeDashboard() {
+  const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down("md"));
   const [searchParams, setSearchParams] = useSearchParams();
   const activeSection = useMemo(() => {
     const s = searchParams.get("section");
-    if (SECTIONS.some((x) => x.key === s)) return s;
+    if (s && SECTION_KEYS.has(s)) return s;
     return "home";
   }, [searchParams]);
+  const activeSectionLabel = useMemo(
+    () => SECTIONS.find((s) => s.key === activeSection)?.label ?? "Dashboard home",
+    [activeSection]
+  );
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [overview, setOverview] = useState(null);
@@ -80,6 +110,46 @@ export default function EmployeeDashboard() {
   const reportsTableRef = useRef(null);
   const [empTrainPct, setEmpTrainPct] = useState({});
   const [courseViewer, setCourseViewer] = useState(null);
+  const [intel, setIntel] = useState(null);
+  const [jobTitles, setJobTitles] = useState([]);
+  const [careerForm, setCareerForm] = useState({
+    target_job_title: "",
+    selected_project_ids: []
+  });
+  const [cvUploadFile, setCvUploadFile] = useState(null);
+  const [cvBusy, setCvBusy] = useState(false);
+  const [careerBusy, setCareerBusy] = useState(false);
+  const [snackbar, setSnackbar] = useState({ open: false, message: "" });
+
+  const headerKpis = useMemo(() => {
+    if (!overview) return [];
+    const r = intel?.readiness?.vs_target_role;
+    const hasMl = intel?.cv_signal?.semantic_similarity_cosine != null && intel?.engine?.sklearn_signals;
+    return [
+      {
+        label: "Target role readiness",
+        value: r?.label ? String(r.label) : "—",
+        hint: "Rule-based readiness bands from weighted skill gaps."
+      },
+      {
+        label: "Alignment score (target)",
+        value: intel?.alignment_score_target_role != null ? `${intel.alignment_score_target_role}%` : "—",
+        hint: hasMl
+          ? "Blended: gap math + scikit-learn TF-IDF cosine vs role profile."
+          : "Gap math only until résumé text supports TF-IDF cosine."
+      },
+      {
+        label: "CV skills detected",
+        value: overview.cv_skills_detected_count != null ? overview.cv_skills_detected_count : "—",
+        hint: "Taxonomy NLP on PDF text (no hallucinated skills)."
+      },
+      {
+        label: "Weighted gap impact",
+        value: overview.weighted_gap_impact_score != null ? overview.weighted_gap_impact_score : "—",
+        hint: "Lower is better — drives training prioritization."
+      }
+    ];
+  }, [overview, intel]);
 
   useEffect(() => {
     loadAll();
@@ -101,7 +171,7 @@ export default function EmployeeDashboard() {
 
   useEffect(() => {
     const s = searchParams.get("section");
-    if (!s || !SECTIONS.some((x) => x.key === s)) {
+    if (!s || !SECTION_KEYS.has(s)) {
       setSearchParams({ section: "home" }, { replace: true });
     }
   }, [searchParams, setSearchParams]);
@@ -119,7 +189,8 @@ export default function EmployeeDashboard() {
       setLoading(true);
     setError("");
     try {
-      const [ov, pr, sk, gp, proj, rec, prog, car, gl, noti] = await Promise.all([
+      const intelPromise = api.get("/analytics/employee/dashboard-intel").catch(() => ({ data: null }));
+      const [ov, pr, sk, gp, proj, rec, prog, car, gl, noti, intelRes] = await Promise.all([
         api.get("/analytics/employee/overview"),
         api.get("/analytics/employee/profile"),
         api.get("/analytics/employee/skills"),
@@ -129,10 +200,18 @@ export default function EmployeeDashboard() {
         api.get("/analytics/employee/training-progress"),
         api.get("/analytics/employee/career-paths"),
         api.get("/analytics/employee/goals"),
-        api.get("/analytics/employee/notifications")
+        api.get("/analytics/employee/notifications"),
+        intelPromise
       ]);
       setOverview(ov.data);
       setProfile(pr.data);
+      setIntel(intelRes.data);
+      try {
+        const opts = await api.get("/registration/options");
+        setJobTitles(opts.data?.job_titles || []);
+      } catch {
+        setJobTitles([]);
+      }
       setSkills(sk.data || []);
       setGaps(gp.data);
       const loadedProjects = proj.data || [];
@@ -161,8 +240,12 @@ export default function EmployeeDashboard() {
         primary_skill: pr.data?.basic?.primary_skill || "",
         headline: pr.data?.basic?.headline || ""
       });
+      setCareerForm({
+        target_job_title: pr.data?.career_preferences?.target_job_title ?? "",
+        selected_project_ids: [...(pr.data?.career_preferences?.selected_project_ids || [])]
+      });
       } catch (err) {
-      setError(err?.response?.data?.detail || "Failed to load employee analytics");
+      setError(getApiErrorMessage(err, "Failed to load employee analytics"));
       } finally {
         setLoading(false);
       }
@@ -287,6 +370,55 @@ export default function EmployeeDashboard() {
     }
   }
 
+  async function saveCareerPreferences() {
+    setError("");
+    setCareerBusy(true);
+    try {
+      const trimmed = careerForm.target_job_title?.trim?.() || "";
+      await api.put("/analytics/employee/career-preferences", {
+        target_job_title: trimmed || null,
+        selected_project_ids: careerForm.selected_project_ids
+      });
+      setSnackbar({ open: true, message: "Career focus saved. Intelligence views updated." });
+      await loadAll();
+    } catch (err) {
+      setError(getApiErrorMessage(err, "Could not save career preferences"));
+    } finally {
+      setCareerBusy(false);
+    }
+  }
+
+  function toggleTrackedOpportunity(projectId) {
+    setCareerForm((f) => {
+      const sid = String(projectId);
+      const next = new Set(f.selected_project_ids.map(String));
+      if (next.has(sid)) next.delete(sid);
+      else next.add(sid);
+      return { ...f, selected_project_ids: Array.from(next) };
+    });
+  }
+
+  async function submitCvReupload() {
+    if (!cvUploadFile || cvUploadFile.type !== "application/pdf") {
+      setError("Please choose a PDF résumé to upload.");
+      return;
+    }
+    setCvBusy(true);
+    setError("");
+    try {
+      const fd = new FormData();
+      fd.append("cv", cvUploadFile);
+      await api.post("/analytics/employee/cv", fd, { headers: { "Content-Type": "multipart/form-data" } });
+      setCvUploadFile(null);
+      setSnackbar({ open: true, message: "Résumé processed — CV skills and narratives refreshed." });
+      await loadAll();
+    } catch (err) {
+      setError(getApiErrorMessage(err, "Résumé upload failed"));
+    } finally {
+      setCvBusy(false);
+    }
+  }
+
   async function saveDailyProjectReport() {
     if (!selectedProjectId) {
       setError("Please select a project");
@@ -364,21 +496,401 @@ export default function EmployeeDashboard() {
             ) : null}
 
             {!loading && activeSection === "home" ? (
-              <Card variant="outlined"><CardContent>
-                <Typography variant="h6" fontWeight={800}>Dashboard home</Typography>
+              <Stack spacing={2}>
+                <Card
+                  variant="outlined"
+                  sx={{
+                    borderRadius: 3,
+                    borderColor: "divider",
+                    background: "linear-gradient(135deg, rgba(25,118,210,0.10) 0%, rgba(46,125,50,0.08) 100%)"
+                  }}
+                >
+                  <CardContent>
+                    <Stack
+                      direction={{ xs: "column", md: "row" }}
+                      spacing={2}
+                      alignItems={{ xs: "flex-start", md: "center" }}
+                      justifyContent="space-between"
+                    >
+                      <Box>
+                        <Typography variant="overline" color="secondary.main">
+                          CV-driven developmental intelligence
+                        </Typography>
+                        <Typography variant="h5" fontWeight={800}>
+                          {intel?.narrative?.headline || "Your competency intelligence"}
+                        </Typography>
+                        <Typography variant="body2" color="text.secondary" sx={{ mt: 0.75, maxWidth: 780 }}>
+                          {intel?.narrative?.subtitle ||
+                            "Upload your résumé and tune your career focus — the engine blends parsed competencies, verified inventory levels, HR role templates, and opportunities you prioritize."}
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1.25 }}>
+                          Welcome, {overview?.welcome_name || "colleague"}. HR job title:{" "}
+                          <strong>{intel?.positions?.hr_job_title || profile?.basic?.job_title || "—"}</strong>
+                          {" · "}Target analyst lens:{" "}
+                          <strong>
+                            {intel?.positions?.target_job_title ||
+                              intel?.positions?.hr_job_title ||
+                              profile?.basic?.job_title ||
+                              "—"}
+                          </strong>
+                        </Typography>
+                      </Box>
+                      <Stack direction={{ xs: "column", sm: "row" }} spacing={1} width={{ xs: "100%", md: "auto" }}>
+                        <Button variant="outlined" fullWidth={isMobile} onClick={() => loadAll()}>
+                          Refresh data
+                        </Button>
+                        <Button variant="contained" fullWidth={isMobile} onClick={() => setSearchParams({ section: "cvfocus" })}>
+                          Résumé & career focus
+                        </Button>
+                      </Stack>
+                    </Stack>
+                  </CardContent>
+                </Card>
+
+                <Grid container spacing={2}>
+                  {headerKpis.map((k, idx) => (
+                    <Grid item xs={12} sm={6} md={3} key={k.label}>
+                      <Card
+                        variant="outlined"
+                        sx={{
+                          borderRadius: 3,
+                          borderColor: "divider",
+                          height: "100%",
+                          position: "relative",
+                          overflow: "hidden",
+                          background:
+                            idx % 2 === 0
+                              ? "linear-gradient(145deg, rgba(25,118,210,0.08) 0%, rgba(255,255,255,0.02) 100%)"
+                              : "linear-gradient(145deg, rgba(46,125,50,0.08) 0%, rgba(255,255,255,0.02) 100%)"
+                        }}
+                      >
+                        <Box
+                          sx={{
+                            position: "absolute",
+                            top: 0,
+                            left: 0,
+                            height: 4,
+                            width: "100%",
+                            bgcolor: idx % 2 === 0 ? "secondary.main" : "primary.main"
+                          }}
+                        />
+                        <CardContent sx={{ pt: 2 }}>
+                          <Typography variant="body2" color="text.secondary">
+                            {k.label}
+                          </Typography>
+                          <Typography variant="h5" fontWeight={900}>
+                            {k.value}
+                          </Typography>
+                          {k.hint ? (
+                            <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.75, lineHeight: 1.35 }}>
+                              {k.hint}
+                            </Typography>
+                          ) : null}
+                        </CardContent>
+                      </Card>
+                    </Grid>
+                  ))}
+                </Grid>
+
+                <SectionPanel>
+                  <Typography variant="h6" fontWeight={800} gutterBottom>
+                    Structured AI / ML pipeline{" "}
+                    <Typography component="span" variant="body2" color="text.secondary" fontWeight={500}>
+                      (NLP taxonomy + classical ML where applicable)
+                    </Typography>
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary" paragraph>
+                    Skills use boundary-aware NLP on your PDF plus canonical normalization. Alignment also blends deterministic gap math with scikit-learn TF–IDF cosine similarity against your target-role competency profile whenever enough résumé text is available — no pretrained LLMs, measurable and reproducible signals only.
+                  </Typography>
+                  <Stack component="ul" sx={{ m: 0, pl: 2.25 }}>
+                    {(intel?.narrative?.bullets || []).map((line, i) => (
+                      <Typography key={`b-${i}`} component="li" variant="body2" sx={{ mb: 1 }}>
+                        {line}
+                      </Typography>
+                    ))}
+                  </Stack>
+                </SectionPanel>
+
+                <Grid container spacing={2}>
+                  <Grid item xs={12} md={6}>
+                    <SectionPanel>
+                      <Typography variant="subtitle1" fontWeight={700} gutterBottom>
+                        Opportunities you prioritized
+                      </Typography>
+                      <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1.5 }}>
+                        Fit percentage compares your inventory to each project skill grid when managers publish explicit requirements.
+                      </Typography>
+                      {(intel?.selected_projects || []).length === 0 ? (
+                        <Alert severity="info" icon={false}>
+                          Short-list internal roles under Career focus — we surface granular fit summaries here so your dashboard mirrors the programs you genuinely want to staff.
+                        </Alert>
+                      ) : (
+                        <Stack spacing={1.25}>
+                          {(intel?.selected_projects || []).map((p) => (
+                            <Paper key={p.project_id} variant="outlined" sx={{ p: 1.75, borderRadius: 2 }}>
+                              <Typography fontWeight={700}>{p.name}</Typography>
+                              <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" sx={{ mt: 0.5 }}>
+                                <Chip size="small" label={p.status || "unknown"} variant="outlined" />
+                                <Typography variant="body2" color="text.secondary">
+                                  Skill-grid fit{" "}
+                                  <strong>{p.project_skill_fit_pct != null ? `${p.project_skill_fit_pct}%` : "N/A"}</strong>
+                                  {p.project_has_skill_grid ? "" : " (no HR grid)"}
+                                </Typography>
+                              </Stack>
+                              <Typography variant="caption" color="text.secondary">
+                                {p.open_slots > 0 ? `${p.open_slots} opening(s) advertised` : "Fully staffed"}
+                              </Typography>
+                            </Paper>
+                          ))}
+                        </Stack>
+                      )}
+                    </SectionPanel>
+                  </Grid>
+                  <Grid item xs={12} md={6}>
+                    <SectionPanel>
+                      <Typography variant="subtitle1" fontWeight={700} gutterBottom>
+                        Open internal roles aligned to your profile
+                      </Typography>
+                      <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1.5 }}>
+                        Only projects marked active/draft with available head-count and overlapping job titles are listed.
+                      </Typography>
+                      {(intel?.open_opportunities || []).length === 0 ? (
+                        <Alert severity="info" icon={false}>
+                          Managers publish staffing demand with tagged job titles. When new opportunities match your HR or aspirational titles, they appear here instantly.
+                        </Alert>
+                      ) : (
+                        <Stack spacing={1.25} sx={{ maxHeight: 280, overflow: "auto", pr: 0.5 }}>
+                          {(intel?.open_opportunities || []).slice(0, 10).map((o) => (
+                            <Paper key={o.project_id} variant="outlined" sx={{ p: 1.5, borderRadius: 2 }}>
+                              <Typography fontWeight={700}>{o.name}</Typography>
+                              <Typography variant="caption" color="text.secondary">
+                                Leader: {o.manager_name || "—"}
+                              </Typography>
+                              <Stack direction="row" spacing={0.75} sx={{ mt: 0.75 }} flexWrap="wrap" useFlexGap>
+                                <Chip size="small" label={`${o.open_slots} slot(s)`} />
+                                {(o.required_job_titles || []).slice(0, 3).map((t) => (
+                                  <Chip key={t} size="small" variant="outlined" label={t} />
+                                ))}
+                              </Stack>
+                            </Paper>
+                          ))}
+                        </Stack>
+                      )}
+                    </SectionPanel>
+                  </Grid>
+                </Grid>
+
+                <SectionPanel>
+                  <Typography variant="subtitle1" fontWeight={700} gutterBottom>
+                    Readiness telemetry (dual lens)
+                  </Typography>
+                  <Grid container spacing={2}>
+                    <Grid item xs={12} md={6}>
+                      <Typography variant="caption" color="text.secondary">
+                        HR record vs. aspiration
+                      </Typography>
+                      <Typography variant="body2" sx={{ mt: 0.5 }}>
+                        Gap pressure (avg): <strong>{intel?.readiness?.vs_hr_record_role?.gap_avg ?? "—"}</strong> · Impact:{" "}
+                        <strong>{intel?.readiness?.vs_hr_record_role?.weighted_impact_avg ?? "—"}</strong>
+                      </Typography>
+                      <Chip
+                        sx={{ mt: 1 }}
+                        color={
+                          intel?.readiness?.vs_hr_record_role?.band === "strong"
+                            ? "success"
+                            : intel?.readiness?.vs_hr_record_role?.band === "developing"
+                              ? "warning"
+                              : intel?.readiness?.vs_hr_record_role?.band === "focus_required"
+                                ? "error"
+                                : "default"
+                        }
+                        label={intel?.readiness?.vs_hr_record_role?.label || "—"}
+                      />
+                    </Grid>
+                    <Grid item xs={12} md={6}>
+                      <Typography variant="caption" color="text.secondary">
+                        Target-role lens ({intel?.positions?.target_job_title || "mirrors HR if unset"})
+                      </Typography>
+                      <Typography variant="body2" sx={{ mt: 0.5 }}>
+                        Gap pressure (avg): <strong>{intel?.readiness?.vs_target_role?.gap_avg ?? "—"}</strong> · Impact:{" "}
+                        <strong>{intel?.readiness?.vs_target_role?.weighted_impact_avg ?? "—"}</strong>
+                      </Typography>
+                      <Chip
+                        sx={{ mt: 1 }}
+                        color={
+                          intel?.readiness?.vs_target_role?.band === "strong"
+                            ? "success"
+                            : intel?.readiness?.vs_target_role?.band === "developing"
+                              ? "warning"
+                              : "error"
+                        }
+                        label={intel?.readiness?.vs_target_role?.label || "—"}
+                      />
+                    </Grid>
+                  </Grid>
+                </SectionPanel>
+
+                <SectionPanel>
+                  <Typography variant="h6" fontWeight={800} gutterBottom>
+                    Activity snapshot ({activeSectionLabel.toLowerCase()})
+                  </Typography>
+                  <Grid container spacing={2}>
+                    <Grid item xs={12} sm={6} md={4}>
+                      <Typography variant="caption" color="text.secondary">
+                        Skill strength avg
+                      </Typography>
+                      <Typography variant="h6" fontWeight={800}>
+                        {overview?.skill_strength_score ?? "—"}
+                      </Typography>
+                    </Grid>
+                    <Grid item xs={12} sm={6} md={4}>
+                      <Typography variant="caption" color="text.secondary">
+                        Plain gap score
+                      </Typography>
+                      <Typography variant="h6" fontWeight={800}>
+                        {overview?.skill_gap_score ?? "—"}
+                      </Typography>
+                    </Grid>
+                    <Grid item xs={12} sm={6} md={4}>
+                      <Typography variant="caption" color="text.secondary">
+                        Profile completeness
+                      </Typography>
+                      <Typography variant="h6" fontWeight={800}>
+                        {overview?.profile_completion_pct ?? 0}%
+                      </Typography>
+                    </Grid>
+                    <Grid item xs={12} sm={6} md={4}>
+                      <Typography variant="caption" color="text.secondary">
+                        Active trainings
+                      </Typography>
+                      <Typography variant="h6" fontWeight={800}>
+                        {overview?.active_trainings ?? "—"}
+                      </Typography>
+                    </Grid>
+                    <Grid item xs={12} sm={6} md={4}>
+                      <Typography variant="caption" color="text.secondary">
+                        Learning sessions live
+                      </Typography>
+                      <Typography variant="h6" fontWeight={800}>
+                        {overview?.actively_learning_now ?? 0}
+                      </Typography>
+                    </Grid>
+                    <Grid item xs={12} sm={6} md={4}>
+                      <Typography variant="caption" color="text.secondary">
+                        Assigned initiatives
+                      </Typography>
+                      <Typography variant="h6" fontWeight={800}>
+                        {overview?.assigned_projects_count ?? 0} ({overview?.active_assigned_projects ?? 0} active/draft)
+                      </Typography>
+                    </Grid>
+                  </Grid>
+                </SectionPanel>
+              </Stack>
+            ) : null}
+
+            {!loading && activeSection === "cvfocus" ? (
+              <SectionPanel>
+                <Typography variant="h6" fontWeight={800} gutterBottom>
+                  Career lens & résumé signal
+                </Typography>
+                <Typography variant="body2" color="text.secondary" paragraph>
+                  Declare the position you aspire toward (must exist in HR master data) and shortlist staffing opportunities. Each save re-evaluates dashboards so metrics always trace back to CV parsing,
+                  inventories, declared targets, and project skill grids.
+                </Typography>
                 <Divider sx={{ my: 2 }} />
                 <Grid container spacing={2}>
-                  <Grid item xs={12} md={4}><Alert severity="info">Welcome {overview?.welcome_name || "Employee"}</Alert></Grid>
-                  <Grid item xs={12} md={4}><Alert severity="success">Profile completion: {overview?.profile_completion_pct || 0}%</Alert></Grid>
-                  <Grid item xs={12} md={4}><Alert severity="info">Skill strength: {overview?.skill_strength_score || 0}</Alert></Grid>
-                  <Grid item xs={12} md={4}><Alert severity="warning">Gap score: {overview?.skill_gap_score || 0}</Alert></Grid>
-                  <Grid item xs={12} md={4}><Alert severity="info">Active trainings: {overview?.active_trainings || 0}</Alert></Grid>
-                  <Grid item xs={12} md={4}><Alert severity={overview?.actively_learning_now > 0 ? "success" : "info"}>Actively learning now: {overview?.actively_learning_now ?? 0}</Alert></Grid>
-                  <Grid item xs={12} md={4}><Alert severity="info">Notifications: {overview?.notifications_count || 0}</Alert></Grid>
-                  <Grid item xs={12} md={4}><Alert severity="success">Assigned projects: {overview?.assigned_projects_count || 0}</Alert></Grid>
-                  <Grid item xs={12} md={4}><Alert severity="info">Active assigned projects: {overview?.active_assigned_projects || 0}</Alert></Grid>
+                  <Grid item xs={12} md={6}>
+                    <TextField
+                      select
+                      fullWidth
+                      label="Target analyst / role lens"
+                      value={careerForm.target_job_title}
+                      helperText={
+                        profile?.basic?.job_title ? `Blank defaults to HR title: ${profile.basic.job_title}` : "Must match HR catalog naming."
+                      }
+                      onChange={(e) =>
+                        setCareerForm((f) => ({
+                          ...f,
+                          target_job_title: typeof e.target.value === "string" ? e.target.value : ""
+                        }))
+                      }
+                    >
+                      <MenuItem value="">
+                        <em>Unspecified — inherit HR role</em>
+                      </MenuItem>
+                      {jobTitles.map((jt) => (
+                        <MenuItem key={jt} value={jt}>
+                          {jt}
+                        </MenuItem>
+                      ))}
+                    </TextField>
+                  </Grid>
+                  <Grid item xs={12} md={6}>
+                    <Typography variant="subtitle2" gutterBottom>
+                      Upload replacement résumé (PDF · max 8MB)
+                    </Typography>
+                    <Stack direction={{ xs: "column", sm: "row" }} spacing={1} alignItems={{ xs: "stretch", sm: "center" }}>
+                      <Button variant="outlined" component="label" fullWidth>
+                        {cvUploadFile?.name ? cvUploadFile.name : "Choose PDF"}
+                        <input
+                          hidden
+                          type="file"
+                          accept="application/pdf"
+                          onChange={(e) => setCvUploadFile(e.target.files?.[0] || null)}
+                        />
+                      </Button>
+                      <Button
+                        variant="contained"
+                        onClick={() => submitCvReupload()}
+                        disabled={cvBusy || !cvUploadFile}
+                        fullWidth
+                      >
+                        {cvBusy ? "Processing..." : "Re-analyze résumé"}
+                      </Button>
+                    </Stack>
+                  </Grid>
                 </Grid>
-              </CardContent></Card>
+                <Divider sx={{ my: 3 }} />
+                <Typography variant="subtitle1" fontWeight={700} gutterBottom>
+                  Match internal postings to watch
+                </Typography>
+                <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+                  Checkbox opportunities to pin them onto your Intelligence Home. Only compatible titles with available head-count are shown below.
+                </Typography>
+                <Stack spacing={0.75}>
+                  {(intel?.open_opportunities || []).length === 0 ? (
+                    <Alert severity="info" icon={false}>
+                      Nothing aligns yet — widen master job titles via HR Admin or collaborate with managers to publish demand.
+                    </Alert>
+                  ) : (
+                    (intel?.open_opportunities || []).map((o) => (
+                      <Paper key={o.project_id} variant="outlined" sx={{ p: 1, borderRadius: 2 }}>
+                        <FormControlLabel
+                          control={
+                            <Checkbox
+                              checked={careerForm.selected_project_ids.includes(String(o.project_id))}
+                              onChange={() => toggleTrackedOpportunity(o.project_id)}
+                            />
+                          }
+                          label={
+                            <Box>
+                              <Typography fontWeight={700}>{o.name}</Typography>
+                              <Typography variant="caption" display="block" color="text.secondary">
+                                {o.open_slots} slot(s) · {o.manager_name}
+                              </Typography>
+                            </Box>
+                          }
+                        />
+                      </Paper>
+                    ))
+                  )}
+                </Stack>
+                <Stack direction="row" justifyContent="flex-end" sx={{ mt: 2 }}>
+                  <Button variant="contained" disabled={careerBusy} onClick={() => saveCareerPreferences()}>
+                    {careerBusy ? "Saving..." : "Save career focus"}
+                  </Button>
+                </Stack>
+              </SectionPanel>
             ) : null}
 
             {!loading && activeSection === "profile" ? (
@@ -402,8 +914,58 @@ export default function EmployeeDashboard() {
                     <Button variant="contained" onClick={saveProfile}>Save profile</Button>
                   </Stack>
                   <Divider sx={{ my: 2 }} />
-                  <Typography variant="subtitle1" fontWeight={700}>CV extracted preview</Typography>
-                  <Typography variant="body2" color="text.secondary">{(profile?.cv_preview?.skills || []).join(", ") || "No CV skills found yet."}</Typography>
+                  <Typography variant="subtitle1" fontWeight={700}>
+                    CV intelligence (from latest upload)
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+                    {profile?.cv_intel?.story_subtitle || "Upload a PDF résumé from Career focus to populate structured signals."}
+                  </Typography>
+                  <Stack spacing={0.75} sx={{ mb: 2 }}>
+                    {(profile?.cv_intel?.analysis_bullets || []).map((b, i) => (
+                      <Typography key={`pbl-${i}`} variant="body2">
+                        • {b}
+                      </Typography>
+                    ))}
+                  </Stack>
+                  <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap sx={{ mb: 1 }}>
+                    <Chip size="small" variant="outlined" label={`Pipeline: ${profile?.cv_intel?.pipeline || "—"}`} />
+                    <Chip
+                      size="small"
+                      variant="outlined"
+                      label={
+                        typeof profile?.cv_intel?.parser_confidence === "number"
+                          ? `Confidence ${(profile.cv_intel.parser_confidence * 100).toFixed(0)}%`
+                          : "Confidence —"
+                      }
+                    />
+                    <Chip
+                      size="small"
+                      color={profile?.cv_intel?.primary_skill_validated === false ? "warning" : "success"}
+                      label={
+                        profile?.cv_intel?.primary_skill_validated === undefined
+                          ? "Primary × CV unchecked"
+                          : profile?.cv_intel?.primary_skill_validated
+                            ? "Primary skill mirrors CV text"
+                            : "Primary wording not in résumé"
+                      }
+                    />
+                  </Stack>
+                  <Typography variant="subtitle2">Catalog skills detected</Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    {(profile?.cv_preview?.skills || []).join(", ") || "No CV-derived skills detected yet."}
+                  </Typography>
+                  <Typography variant="subtitle2" sx={{ mt: 2 }}>
+                    Suggested adjunct skills
+                  </Typography>
+                  <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
+                    {(profile?.cv_intel?.suggested_skills || []).length ? (
+                      (profile.cv_intel.suggested_skills || []).map((s) => <Chip key={s} size="small" label={s} />)
+                    ) : (
+                      <Typography variant="caption" color="text.secondary">
+                        Parsed CV overlaps will appear here automatically.
+                      </Typography>
+                    )}
+                  </Stack>
                 </CardContent>
               </Card>
             ) : null}
@@ -413,6 +975,9 @@ export default function EmployeeDashboard() {
                 <CardContent>
                   <Typography variant="h6" fontWeight={800}>
                     Skill inventory
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                    Rows marked from CV ingestion stay traceable alongside self-service edits — reconcile here if recruiters adjust your competencies.
                   </Typography>
                   <Divider sx={{ my: 2 }} />
                   <Stack direction="row" spacing={1} sx={{ mb: 2 }}>
@@ -474,7 +1039,8 @@ export default function EmployeeDashboard() {
                     Individual skill gap visualization
                   </Typography>
                   <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-                    Gaps use normalized skill names. Importance weights emphasize your primary domain and role-specific skills; weighted impact drives training priority.
+                    Gaps reconcile your canonical inventory against HR-required role templates sourced from employee records — CV ingestion pre-seeded many entries. Weighted impact still drives training
+                    sequencing and matches the rationale you see inside recommendations.
                   </Typography>
                   <Divider sx={{ my: 2 }} />
                   <TableContainer>
@@ -902,6 +1468,13 @@ export default function EmployeeDashboard() {
           </Grid>
         </Grid>
       </Stack>
+      <Snackbar
+        anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
+        open={snackbar.open}
+        autoHideDuration={5200}
+        onClose={() => setSnackbar((s) => ({ ...s, open: false }))}
+        message={snackbar.message}
+      />
       <CourseMaterialViewerModal
         open={Boolean(courseViewer)}
         onClose={() => {
