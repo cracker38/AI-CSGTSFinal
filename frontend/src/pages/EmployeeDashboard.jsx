@@ -949,7 +949,49 @@ export default function EmployeeDashboard() {
                             : "Primary wording not in résumé"
                       }
                     />
+                    <Chip
+                      size="small"
+                      variant="outlined"
+                      label={
+                        typeof profile?.cv_intel?.role_context_alignment?.weighted_role_alignment_pct === "number"
+                          ? `Role-context alignment ${profile.cv_intel.role_context_alignment.weighted_role_alignment_pct}%`
+                          : "Role-context alignment —"
+                      }
+                    />
+                    <Chip
+                      size="small"
+                      variant="outlined"
+                      label={
+                        typeof profile?.cv_intel?.role_context_alignment?.required_skill_overlap === "number" &&
+                        typeof profile?.cv_intel?.role_context_alignment?.required_skill_count === "number"
+                          ? `Overlap ${profile.cv_intel.role_context_alignment.required_skill_overlap}/${profile.cv_intel.role_context_alignment.required_skill_count}`
+                          : "Overlap —"
+                      }
+                    />
                   </Stack>
+                  {(profile?.cv_intel?.role_context_alignment?.selected_job_title ||
+                    profile?.cv_intel?.role_context_alignment?.selected_department ||
+                    profile?.cv_intel?.role_context_alignment?.selected_primary_skill) ? (
+                    <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1.25 }}>
+                      Context used: job title <strong>{profile?.cv_intel?.role_context_alignment?.selected_job_title || "—"}</strong>
+                      {" · "}department <strong>{profile?.cv_intel?.role_context_alignment?.selected_department || "—"}</strong>
+                      {" · "}primary skill <strong>{profile?.cv_intel?.role_context_alignment?.selected_primary_skill || "—"}</strong>
+                    </Typography>
+                  ) : null}
+                  <Typography variant="subtitle2" sx={{ mt: 1 }}>
+                    Priority missing skills for selected context
+                  </Typography>
+                  {(profile?.cv_intel?.role_context_alignment?.missing_priority_skills || []).length ? (
+                    <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap sx={{ mb: 1 }}>
+                      {(profile.cv_intel.role_context_alignment.missing_priority_skills || []).slice(0, 10).map((s) => (
+                        <Chip key={`missing-${s}`} size="small" color="warning" variant="outlined" label={s} />
+                      ))}
+                    </Stack>
+                  ) : (
+                    <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
+                      No high-priority missing skills detected for the selected job/department context.
+                    </Typography>
+                  )}
                   <Typography variant="subtitle2">Catalog skills detected</Typography>
                   <Typography variant="body2" color="text.secondary">
                     {(profile?.cv_preview?.skills || []).join(", ") || "No CV-derived skills detected yet."}

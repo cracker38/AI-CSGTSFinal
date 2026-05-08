@@ -280,7 +280,7 @@ def build_employee_dashboard_intel(db: Session, user: User, profile: EmployeePro
     hr_jt = (user.job_title or "").strip()
 
     cur = _employee_current_skill_map(db, user.id)
-    req_hr, w_hr = required_skill_levels_for(user.primary_skill, hr_jt)
+    req_hr, w_hr = required_skill_levels_for(user.primary_skill, hr_jt, user.department)
     gap_hr, w_imp_hr = _gap_averages(cur, req_hr, w_hr)
     band_hr, label_hr = _readiness_band(w_imp_hr)
 
@@ -289,7 +289,7 @@ def build_employee_dashboard_intel(db: Session, user: User, profile: EmployeePro
         gap_tgt, w_imp_tgt, band_tgt, label_tgt = gap_hr, w_imp_hr, band_hr, label_hr
         req_tgt = req_hr
     else:
-        req_tgt, w_tgt = required_skill_levels_for(user.primary_skill, target_jt)
+        req_tgt, w_tgt = required_skill_levels_for(user.primary_skill, target_jt, user.department)
         gap_tgt, w_imp_tgt = _gap_averages(cur, req_tgt, w_tgt)
         band_tgt, label_tgt = _readiness_band(w_imp_tgt)
 

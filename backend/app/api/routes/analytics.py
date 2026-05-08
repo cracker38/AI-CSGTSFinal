@@ -520,6 +520,7 @@ def employee_profile(
             "primary_skill_validated": ai.get("primary_skill_validated"),
             "parser_confidence": ai.get("confidence"),
             "pipeline": ai.get("nlp_pipeline") or nlp.get("pipeline"),
+            "role_context_alignment": ai.get("role_context_alignment") or {},
         },
         "cv_preview": {
             "skills": (cv_extract.get("skills") or [])[:20],

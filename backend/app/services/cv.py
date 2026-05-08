@@ -20,6 +20,7 @@ from app.models.skill import Skill
 from app.models.user import User
 from app.models.user_skill import SkillSource, UserSkill
 from app.services.employee_intel import sync_ai_cv_story
+from app.services.required_skill_profile import required_skill_levels_for
 from app.services.skill_normalization import normalize_skill_name
 
 
@@ -87,6 +88,43 @@ def _extract_experience_years(text: str) -> int | None:
         return None
 
 
+def _compute_context_alignment(
+    *,
+    extracted_skills: list[str],
+    selected_primary_skill: str,
+    selected_job_title: str,
+    selected_department: str,
+) -> dict:
+    normalized = {normalize_skill_name(s) for s in extracted_skills if normalize_skill_name(s)}
+    req_levels, req_weights = required_skill_levels_for(
+        selected_primary_skill,
+        selected_job_title,
+        selected_department,
+    )
+    req_keys = set(req_levels.keys())
+    overlap = normalized & req_keys
+    weighted_total = sum(float(req_weights.get(k, 1.0)) for k in req_keys) or 1.0
+    weighted_hit = sum(float(req_weights.get(k, 1.0)) for k in overlap)
+    weighted_pct = round((weighted_hit / weighted_total) * 100.0, 1)
+    primary_norm = normalize_skill_name(selected_primary_skill)
+    missing_ranked = sorted(
+        [k for k in req_keys if k not in normalized],
+        key=lambda k: float(req_weights.get(k, 1.0)),
+        reverse=True,
+    )
+    return {
+        "selected_primary_skill": selected_primary_skill,
+        "selected_job_title": selected_job_title,
+        "selected_department": selected_department,
+        "required_skill_count": len(req_keys),
+        "required_skill_overlap": len(overlap),
+        "required_skill_overlap_pct": round((len(overlap) / max(1, len(req_keys))) * 100.0, 1),
+        "weighted_role_alignment_pct": weighted_pct,
+        "primary_skill_in_cv": bool(primary_norm and primary_norm in normalized),
+        "missing_priority_skills": missing_ranked[:10],
+    }
+
+
 def save_and_process_cv(
     db: Session,
     *,
@@ -145,11 +183,21 @@ def save_and_process_cv(
         profile.cv_extract = extract
         # AI profile enrichment (starter rules)
         ai_profile = dict(profile.ai_profile or {})
+        role_context = _compute_context_alignment(
+            extracted_skills=skills,
+            selected_primary_skill=user.primary_skill,
+            selected_job_title=user.job_title,
+            selected_department=user.department,
+        )
         pk = normalize_skill_name(user.primary_skill)
         ai_profile["suggested_skills"] = [s for s in skills if s and s != pk][:15]
-        ai_profile["primary_skill_validated"] = pk in skills if pk else False
+        ai_profile["primary_skill_validated"] = role_context["primary_skill_in_cv"] if pk else False
         ai_profile["confidence"] = doc_conf if skills else (0.25 if raw_text.strip() else 0.15)
         ai_profile["nlp_pipeline"] = "taxonomy_regex_v1"
+        ai_profile["role_context_alignment"] = role_context
+        ai_profile["profile_personalization_key"] = (
+            f"{normalize_skill_name(user.primary_skill)}|{user.job_title.strip().lower()}|{user.department.strip().lower()}"
+        )
         profile.ai_profile = ai_profile
         sync_ai_cv_story(db, profile, user)
 
