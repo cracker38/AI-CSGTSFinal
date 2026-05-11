@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from sqlalchemy.orm import Session
 from sqlalchemy import inspect, text
 
@@ -10,11 +12,38 @@ from app.models.master_data import DepartmentCatalog, JobTitleCatalog
 from app.models.skill import Skill
 from app.models.user import AccountStatus, User, UserRole
 
+logger = logging.getLogger(__name__)
+
 
 def ensure_default_system_admin(db: Session) -> None:
     email = settings.default_system_admin_email.strip().lower()
     user = db.query(User).filter(User.email == email).one_or_none()
     if user:
+        if user.role != UserRole.system_admin:
+            logger.warning(
+                "DEFAULT_SYSTEM_ADMIN_EMAIL %r is already used by a %s account; cannot seed system admin. "
+                "Pick a different DEFAULT_SYSTEM_ADMIN_EMAIL or free that email in the database.",
+                email,
+                user.role.value,
+            )
+            return
+        if settings.sync_default_admin_password_on_startup:
+            user.password_hash = hash_password(settings.default_system_admin_password)
+            db.commit()
+        return
+
+    # One active system admin with a different email (e.g. after changing .env): align email + password.
+    admins = (
+        db.query(User)
+        .filter(User.role == UserRole.system_admin, User.status == AccountStatus.active)
+        .all()
+    )
+    if len(admins) == 1:
+        lone = admins[0]
+        lone.email = email
+        lone.password_hash = hash_password(settings.default_system_admin_password)
+        lone.must_change_password = True
+        db.commit()
         return
 
     user = User(

@@ -81,14 +81,16 @@ export default function LoginPage() {
       if (res.data.must_change_password) navigate("/change-password");
       else navigate(dashboardPathForRole(res.data.role));
     } catch (err) {
-      const msg = getApiErrorMessage(err, "Login failed");
-      const extra =
-        err?.response?.status === 401
-          ? " Check your email/password. If your account is pending approval, contact your HR admin."
-          : err?.response?.status === 0 || !err?.response
-            ? " Server is unreachable right now. Please try again in a moment."
-            : "";
-      setError(msg + extra);
+      const status = err?.response?.status;
+      let msg = getApiErrorMessage(err, "Login failed");
+      if (status === 403) {
+        msg += " If your account is pending approval, contact your HR admin.";
+      } else if (status === 401) {
+        msg += " Check that your email and password match your account (passwords are case-sensitive).";
+      } else if (status === 0 || !err?.response) {
+        msg += " Server is unreachable right now. Please try again in a moment.";
+      }
+      setError(msg);
     } finally {
       setBusy(false);
     }
