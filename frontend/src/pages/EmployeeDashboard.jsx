@@ -824,7 +824,7 @@ export default function EmployeeDashboard() {
                         </MenuItem>
                       ))}
                     </TextField>
-                  </Grid>
+                </Grid>
                   <Grid item xs={12} md={6}>
                     <Typography variant="subtitle2" gutterBottom>
                       Upload replacement résumé (PDF · max 8MB)

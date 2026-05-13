@@ -5,9 +5,11 @@ import {
   Button,
   Card,
   CardContent,
+  Checkbox,
   Chip,
   CircularProgress,
   Divider,
+  FormControlLabel,
   Grid,
   MenuItem,
   Stack,
@@ -80,6 +82,7 @@ export default function ManagerDashboard() {
   const [query, setQuery] = useState("");
   const [availabilityFilter, setAvailabilityFilter] = useState("");
   const [skillFilter, setSkillFilter] = useState("");
+  const [showArchivedProjects, setShowArchivedProjects] = useState(false);
   const [projectForm, setProjectForm] = useState({
     name: "",
     description: "",
@@ -276,6 +279,73 @@ export default function ManagerDashboard() {
     }
   }
 
+  async function unassignFromProject(employeeId) {
+    if (!selectedProjectId || !employeeId) return;
+    setError("");
+    setAssignSuccess("");
+    try {
+      await api.delete(`/manager/projects/${selectedProjectId}/assignments/${employeeId}`);
+      await loadProjectAssignments(selectedProjectId);
+      await load();
+      setAssignSuccess("Assignment removed successfully.");
+    } catch (err) {
+      setError(err?.response?.data?.detail || "Failed to remove assignment");
+    }
+  }
+
+  async function deleteProject(projectId, projectName) {
+    if (!projectId) return;
+    const ok = window.confirm(`Delete project "${projectName}"? This will remove related assignments and reports.`);
+    if (!ok) return;
+    setError("");
+    setAssignSuccess("");
+    try {
+      await api.delete(`/manager/projects/${projectId}`);
+      if (selectedProjectId === projectId) {
+        setSelectedProjectId("");
+        setProjectAssignmentsMap({});
+        setProjectDailyReports([]);
+      }
+      await load();
+      setAssignSuccess("Project deleted.");
+    } catch (err) {
+      setError(err?.response?.data?.detail || "Failed to delete project");
+    }
+  }
+
+  async function archiveProject(projectId, projectName) {
+    if (!projectId) return;
+    const ok = window.confirm(`Archive project "${projectName}"? It will stay in history and stop new assignments.`);
+    if (!ok) return;
+    setError("");
+    setAssignSuccess("");
+    try {
+      await api.post(`/manager/projects/${projectId}/archive`);
+      await load();
+      setAssignSuccess("Project archived.");
+    } catch (err) {
+      setError(err?.response?.data?.detail || "Failed to archive project");
+    }
+  }
+
+  async function unassignTeamMember(employeeId, name) {
+    if (!employeeId) return;
+    const ok = window.confirm(`Unassign ${name} from your team?`);
+    if (!ok) return;
+    setError("");
+    setAssignSuccess("");
+    try {
+      await api.post(`/manager/team-members/${employeeId}/unassign`);
+      await load();
+      if (selectedProjectId) {
+        await loadProjectAssignments(selectedProjectId);
+      }
+      setAssignSuccess(`${name} was unassigned from your team.`);
+    } catch (err) {
+      setError(err?.response?.data?.detail || "Failed to unassign team member");
+    }
+  }
+
   async function submitCatalogRequest() {
     if (!requestForm.value.trim()) return;
     setError("");
@@ -327,10 +397,22 @@ export default function ManagerDashboard() {
     return projects.find((p) => p.id === selectedProjectId) || null;
   }, [projects, selectedProjectId]);
 
+  const selectableProjects = useMemo(
+    () => (showArchivedProjects ? projects : projects.filter((p) => p.status !== "cancelled")),
+    [projects, showArchivedProjects]
+  );
+
   useEffect(() => {
     loadProjectAssignments(selectedProjectId);
     loadProjectDailyReports(selectedProjectId);
   }, [selectedProjectId]);
+
+  useEffect(() => {
+    if (!selectedProjectId) return;
+    if (!selectableProjects.some((p) => p.id === selectedProjectId)) {
+      setSelectedProjectId("");
+    }
+  }, [selectedProjectId, selectableProjects]);
 
   function getAssignmentBlockReason(member, project) {
     if (!project) return "Select a project first.";
@@ -436,6 +518,7 @@ export default function ManagerDashboard() {
                           <TableCell>Skills</TableCell>
                           <TableCell>Availability</TableCell>
                           <TableCell>Performance</TableCell>
+                          <TableCell align="right">Action</TableCell>
                         </TableRow>
                       </TableHead>
                       <TableBody>
@@ -446,6 +529,16 @@ export default function ManagerDashboard() {
                             <TableCell>{row.skills.slice(0, 3).map((s) => `${s.name} (${s.level})`).join(", ")}</TableCell>
                             <TableCell><Chip size="small" color={row.availability === "overloaded" ? "error" : "success"} label={`${row.availability} (${row.workload_pct}%)`} /></TableCell>
                             <TableCell>{row.performance}%</TableCell>
+                            <TableCell align="right">
+                              <Button
+                                size="small"
+                                color="warning"
+                                variant="outlined"
+                                onClick={() => unassignTeamMember(row.id, row.name)}
+                              >
+                                Unassign
+                              </Button>
+                            </TableCell>
                           </TableRow>
                         ))}
                       </TableBody>
@@ -480,6 +573,14 @@ export default function ManagerDashboard() {
               <Card variant="outlined"><CardContent>
                 <Typography variant="h6" fontWeight={800}>Team skill gap analysis</Typography>
                 <Divider sx={{ my: 2 }} />
+                <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+                  Total gap rows: {gaps.length}
+                </Typography>
+                {gaps.length === 0 ? (
+                  <Alert severity="info" sx={{ mb: 2 }}>
+                    No gap entries yet. Add project required skills and assign team members to generate gap analysis.
+                  </Alert>
+                ) : null}
                 <TableContainer><Table size="small"><TableHead><TableRow>
                   <TableCell>Skill</TableCell><TableCell>Required</TableCell><TableCell>Current</TableCell><TableCell>Gap</TableCell><TableCell>Severity</TableCell>
                 </TableRow></TableHead><TableBody>
@@ -538,6 +639,11 @@ export default function ManagerDashboard() {
                 </Grid>
                 <Divider sx={{ my: 2 }} />
                 <Stack direction="row" spacing={1} sx={{ mb: 2 }}>
+                  <FormControlLabel
+                    control={<Checkbox checked={showArchivedProjects} onChange={(e) => setShowArchivedProjects(e.target.checked)} />}
+                    label="Show archived projects"
+                    sx={{ mr: 2 }}
+                  />
                   <TextField
                     select
                     size="small"
@@ -546,7 +652,7 @@ export default function ManagerDashboard() {
                     onChange={(e) => setSelectedProjectId(e.target.value)}
                     sx={{ minWidth: 320 }}
                   >
-                    {projects.map((p) => <MenuItem key={p.id} value={p.id}>{p.name}</MenuItem>)}
+                    {selectableProjects.map((p) => <MenuItem key={p.id} value={p.id}>{p.name}</MenuItem>)}
                   </TextField>
                 </Stack>
                 <TableContainer sx={{ mb: 2 }}>
@@ -587,9 +693,33 @@ export default function ManagerDashboard() {
                 </TableContainer>
                 <Divider sx={{ my: 2 }} />
                 <TableContainer><Table size="small"><TableHead><TableRow>
-                  <TableCell>Project</TableCell><TableCell>Status</TableCell><TableCell>Required Job Titles</TableCell><TableCell>Deadline</TableCell><TableCell>Assigned</TableCell>
+                  <TableCell>Project</TableCell><TableCell>Status</TableCell><TableCell>Required Job Titles</TableCell><TableCell>Deadline</TableCell><TableCell>Assigned</TableCell><TableCell align="right">Action</TableCell>
                 </TableRow></TableHead><TableBody>
-                  {projects.map((p) => <TableRow key={p.id}><TableCell>{p.name}</TableCell><TableCell>{p.status}</TableCell><TableCell>{(p.required_job_titles || []).join(", ") || "-"}</TableCell><TableCell>{p.deadline || "-"}</TableCell><TableCell>{p.assigned_employees}/{p.required_employees}</TableCell></TableRow>)}
+                  {projects.map((p) => (
+                    <TableRow key={p.id}>
+                      <TableCell>{p.name}</TableCell>
+                      <TableCell>{p.status}</TableCell>
+                      <TableCell>{(p.required_job_titles || []).join(", ") || "-"}</TableCell>
+                      <TableCell>{p.deadline || "-"}</TableCell>
+                      <TableCell>{p.assigned_employees}/{p.required_employees}</TableCell>
+                      <TableCell align="right">
+                        <Stack direction="row" spacing={1} justifyContent="flex-end">
+                          <Button
+                            size="small"
+                            color="warning"
+                            variant="outlined"
+                            onClick={() => archiveProject(p.id, p.name)}
+                            disabled={p.status === "cancelled"}
+                          >
+                            Archive
+                          </Button>
+                          <Button size="small" color="error" variant="outlined" onClick={() => deleteProject(p.id, p.name)}>
+                            Delete
+                          </Button>
+                        </Stack>
+                      </TableCell>
+                    </TableRow>
+                  ))}
                 </TableBody></Table></TableContainer>
               </CardContent></Card>
             ) : null}
@@ -604,6 +734,11 @@ export default function ManagerDashboard() {
                     Ask HR/Admin to approve employees under your account (or reassign employees to you).
                   </Alert>
                 ) : null}
+                <FormControlLabel
+                  control={<Checkbox checked={showArchivedProjects} onChange={(e) => setShowArchivedProjects(e.target.checked)} />}
+                  label="Show archived projects"
+                  sx={{ mb: 1 }}
+                />
                 <Stack direction="row" spacing={1} sx={{ mb: 2 }}>
                   <TextField
                     select
@@ -617,7 +752,7 @@ export default function ManagerDashboard() {
                     }}
                     sx={{ minWidth: 260 }}
                   >
-                    {projects.map((p) => <MenuItem key={p.id} value={p.id}>{p.name}</MenuItem>)}
+                    {selectableProjects.map((p) => <MenuItem key={p.id} value={p.id}>{p.name}</MenuItem>)}
                   </TextField>
                   <Button
                     variant="contained"
@@ -678,6 +813,11 @@ export default function ManagerDashboard() {
                 <Typography variant="h6" fontWeight={800}>Project assignment</Typography>
                 <Divider sx={{ my: 2 }} />
                 {assignSuccess ? <Alert severity="success" sx={{ mb: 2 }}>{assignSuccess}</Alert> : null}
+                <FormControlLabel
+                  control={<Checkbox checked={showArchivedProjects} onChange={(e) => setShowArchivedProjects(e.target.checked)} />}
+                  label="Show archived projects"
+                  sx={{ mb: 1 }}
+                />
                 <Stack direction="row" spacing={1}>
                   <TextField
                     select
@@ -691,7 +831,7 @@ export default function ManagerDashboard() {
                     }}
                     sx={{ minWidth: 240 }}
                   >
-                    {projects.map((p) => <MenuItem key={p.id} value={p.id}>{p.name}</MenuItem>)}
+                    {selectableProjects.map((p) => <MenuItem key={p.id} value={p.id}>{p.name}</MenuItem>)}
                   </TextField>
                   <TextField select size="small" label="Employee" value={assignEmployeeId} onChange={(e) => setAssignEmployeeId(e.target.value)} sx={{ minWidth: 300 }}>
                     {team.map((t) => {
@@ -728,6 +868,50 @@ export default function ManagerDashboard() {
                   <Alert severity="warning" sx={{ mt: 2 }}>
                     No team members match this project's required job titles.
                   </Alert>
+                ) : null}
+                {selectedProjectId ? (
+                  <>
+                    <Divider sx={{ my: 2 }} />
+                    <Typography variant="subtitle2" sx={{ mb: 1 }}>Current project assignments</Typography>
+                    <TableContainer>
+                      <Table size="small">
+                        <TableHead>
+                          <TableRow>
+                            <TableCell>Employee</TableCell>
+                            <TableCell align="right">Allocation</TableCell>
+                            <TableCell align="right">Action</TableCell>
+                          </TableRow>
+                        </TableHead>
+                        <TableBody>
+                          {Object.keys(projectAssignmentsMap).length === 0 ? (
+                            <TableRow>
+                              <TableCell colSpan={3}>No employees assigned to this project yet.</TableCell>
+                            </TableRow>
+                          ) : (
+                            Object.entries(projectAssignmentsMap).map(([employeeId, allocation]) => {
+                              const employee = team.find((t) => t.id === employeeId);
+                              return (
+                                <TableRow key={employeeId}>
+                                  <TableCell>{employee?.name || employeeId}</TableCell>
+                                  <TableCell align="right">{allocation}%</TableCell>
+                                  <TableCell align="right">
+                                    <Button
+                                      size="small"
+                                      color="warning"
+                                      variant="outlined"
+                                      onClick={() => unassignFromProject(employeeId)}
+                                    >
+                                      Remove
+                                    </Button>
+                                  </TableCell>
+                                </TableRow>
+                              );
+                            })
+                          )}
+                        </TableBody>
+                      </Table>
+                    </TableContainer>
+                  </>
                 ) : null}
               </CardContent></Card>
             ) : null}

@@ -2,14 +2,17 @@ import axios from "axios";
 import { getAuth, clearAuth } from "../auth/authStore";
 
 const envBase = import.meta.env.VITE_API_BASE;
-// In dev, prefer same-origin /api/v1 when VITE_API_BASE is unset (uses Vite proxy to uvicorn).
+// Keep a single source of truth for the API base URL.
+// `LoginPage.jsx` appends `/auth/ping` to this value.
+export function getApiBaseUrl() {
+  const trimmed = envBase && String(envBase).trim().length > 0 ? String(envBase).replace(/\/$/, "") : "";
+  if (trimmed) return trimmed;
+  // In dev, prefer same-origin `/api/v1` when VITE_API_BASE is unset (uses Vite proxy to uvicorn).
+  return import.meta.env.DEV ? "/api/v1" : "http://localhost:8010/api/v1";
+}
+
 export const api = axios.create({
-  baseURL:
-    envBase && String(envBase).trim().length > 0
-      ? String(envBase).replace(/\/$/, "")
-      : import.meta.env.DEV
-        ? "/api/v1"
-        : "http://localhost:8010/api/v1",
+  baseURL: getApiBaseUrl(),
   // Without a timeout, a dead proxy/backend leaves login stuck on "Signing in..." forever.
   timeout: 30_000
 });

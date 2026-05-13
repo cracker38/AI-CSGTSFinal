@@ -26,7 +26,7 @@ class Settings(BaseSettings):
 
     cors_origins: str = "http://localhost:5173"
 
-    default_system_admin_email: str = "it.elias38@gmail.com"
+    default_system_admin_email: str = "shemapato100@gmail.com"
     default_system_admin_password: str = "Shema@123"
     # Local recovery: set true once so startup re-hashes the default admin password from .env, then set false.
     sync_default_admin_password_on_startup: bool = False

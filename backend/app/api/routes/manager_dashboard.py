@@ -224,7 +224,7 @@ def skills_gaps(
     team_size = max(len(team_ids), 1)
     current_rows = (
         db.query(UserSkill.user_id, Skill.name, UserSkill.level)
-        .join(UserSkill, UserSkill.skill_id == Skill.id)
+        .join(Skill, Skill.id == UserSkill.skill_id)
         .filter(UserSkill.user_id.in_(team_ids) if team_ids else False)
         .all()
     )
@@ -620,6 +620,8 @@ def assign_employee(
     project = db.query(ManagerProject).filter(ManagerProject.id == project_id, ManagerProject.manager_id == manager.id).one_or_none()
     if not project:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    if project.status == ProjectStatus.cancelled:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Archived project cannot receive new assignments")
     required_titles = {
         row[0]
         for row in db.query(ProjectJobTitleRequirement.job_title)
@@ -651,6 +653,96 @@ def assign_employee(
         project.status = ProjectStatus.active
     db.commit()
     return {"ok": True}
+
+
+@router.delete("/projects/{project_id}/assignments/{employee_id}")
+def unassign_employee_from_project(
+    project_id: uuid.UUID,
+    employee_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    manager: User = Depends(require_roles(UserRole.manager)),
+) -> dict:
+    project = db.query(ManagerProject).filter(ManagerProject.id == project_id, ManagerProject.manager_id == manager.id).one_or_none()
+    if not project:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    row = (
+        db.query(ProjectAssignment)
+        .filter(ProjectAssignment.project_id == project.id, ProjectAssignment.employee_id == employee_id)
+        .one_or_none()
+    )
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Assignment not found")
+    db.delete(row)
+    db.commit()
+    return {"ok": True}
+
+
+@router.delete("/projects/{project_id}")
+def delete_project(
+    project_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    manager: User = Depends(require_roles(UserRole.manager)),
+) -> dict:
+    project = db.query(ManagerProject).filter(ManagerProject.id == project_id, ManagerProject.manager_id == manager.id).one_or_none()
+    if not project:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+    # Explicitly clear linked rows for SQLite/local compatibility.
+    db.query(ProjectAssignment).filter(ProjectAssignment.project_id == project.id).delete(synchronize_session=False)
+    db.query(ProjectSkillRequirement).filter(ProjectSkillRequirement.project_id == project.id).delete(synchronize_session=False)
+    db.query(ProjectJobTitleRequirement).filter(ProjectJobTitleRequirement.project_id == project.id).delete(synchronize_session=False)
+    db.query(EmployeeProjectDailyReport).filter(EmployeeProjectDailyReport.project_id == project.id).delete(synchronize_session=False)
+    db.delete(project)
+    db.commit()
+    return {"ok": True}
+
+
+@router.post("/projects/{project_id}/archive")
+def archive_project(
+    project_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    manager: User = Depends(require_roles(UserRole.manager)),
+) -> dict:
+    project = db.query(ManagerProject).filter(ManagerProject.id == project_id, ManagerProject.manager_id == manager.id).one_or_none()
+    if not project:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    if project.status == ProjectStatus.cancelled:
+        return {"ok": True, "status": "cancelled"}
+    project.status = ProjectStatus.cancelled
+    db.add(project)
+    db.commit()
+    return {"ok": True, "status": "cancelled"}
+
+
+@router.post("/team-members/{employee_id}/unassign")
+def unassign_team_member(
+    employee_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    manager: User = Depends(require_roles(UserRole.manager)),
+) -> dict:
+    employee = (
+        db.query(User)
+        .filter(User.id == employee_id, User.role == UserRole.employee, User.manager_id == manager.id)
+        .one_or_none()
+    )
+    if not employee:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not in your team")
+
+    project_ids = [
+        pid
+        for (pid,) in db.query(ManagerProject.id).filter(ManagerProject.manager_id == manager.id).all()
+    ]
+    removed = 0
+    if project_ids:
+        removed = (
+            db.query(ProjectAssignment)
+            .filter(ProjectAssignment.employee_id == employee.id, ProjectAssignment.project_id.in_(project_ids))
+            .delete(synchronize_session=False)
+        )
+    employee.manager_id = None
+    db.add(employee)
+    db.commit()
+    return {"ok": True, "removed_project_assignments": int(removed or 0)}
 
 
 @router.get("/workload")
