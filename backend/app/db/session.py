@@ -8,7 +8,8 @@ from app.core.config import settings
 
 connect_args: dict = {}
 if settings.database_url.startswith("sqlite"):
-    connect_args = {"check_same_thread": False}
+    # timeout seconds: avoid indefinite wait if the dev DB file is locked by another process.
+    connect_args = {"check_same_thread": False, "timeout": 20}
 elif "postgresql" in settings.database_url:
     # Without this, a stopped Postgres can leave TCP (and login) hanging until the client times out.
     connect_args = {"connect_timeout": 10}

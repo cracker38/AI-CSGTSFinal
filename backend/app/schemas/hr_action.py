@@ -27,6 +27,13 @@ class CvValidationDecisionRequest(BaseModel):
     note: str | None = Field(default=None, max_length=2000)
 
 
+class CvFeedbackNoteRequest(BaseModel):
+    """HR-only message on the employee's profile (does not change primary-skill validation)."""
+
+    user_id: uuid.UUID
+    note: str = Field(..., min_length=1, max_length=2000)
+
+
 class TrainingAssignRequest(BaseModel):
     user_id: uuid.UUID
     program_name: str = Field(..., min_length=1, max_length=300)

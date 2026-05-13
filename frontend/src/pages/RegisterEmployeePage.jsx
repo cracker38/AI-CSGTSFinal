@@ -91,7 +91,11 @@ export default function RegisterEmployeePage() {
       Object.entries(form).forEach(([k, v]) => fd.append(k, v));
       fd.append("cv", cv);
       await api.post("/registration/employee", fd, { headers: { "Content-Type": "multipart/form-data" } });
-      setOk("Registration submitted. Your account is pending approval by HR Admin or System Admin.");
+      setOk("Registration submitted. Your account is pending approval by HR Admin or System Admin. Redirecting to login…");
+      sessionStorage.setItem("aicsgts_registration_submitted", "1");
+      window.setTimeout(() => {
+        navigate("/login", { replace: true });
+      }, 2200);
     } catch (err) {
       setError(getApiErrorMessage(err, "Registration failed"));
     } finally {

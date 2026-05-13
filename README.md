@@ -16,7 +16,7 @@ Enterprise Workforce Intelligence Platform (MVP scaffold).
 
 - FastAPI backend with **RBAC**, JWT auth, bcrypt passwords
 - Required **default System Admin** seed:
-  - Email: `shemapato100@gmail.com`
+  - Email: `it.elias38@gmail.com`
   - Password: `Shema@123`
   - **First login forces password change**
 - Employee registration with exactly **10 inputs** + **CV PDF upload**

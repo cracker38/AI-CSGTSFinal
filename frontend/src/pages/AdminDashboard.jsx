@@ -14,7 +14,6 @@ import {
   DialogContentText,
   DialogTitle,
   Divider,
-  FormControlLabel,
   Grid,
   IconButton,
   LinearProgress,
@@ -22,7 +21,6 @@ import {
   Menu,
   Snackbar,
   Stack,
-  Switch,
   Table,
   TableBody,
   TableCell,
@@ -50,12 +48,9 @@ const SECTIONS = [
   { key: "users", label: "User management" },
   { key: "masterdata", label: "Master data" },
   { key: "permissions", label: "Roles & permissions" },
-  { key: "config", label: "System configuration" },
-  { key: "integrations", label: "Integrations" },
   { key: "audit", label: "Audit logs" },
   { key: "data", label: "Import / Export" },
-  { key: "health", label: "System health" },
-  { key: "backup", label: "Backup & recovery" }
+  { key: "health", label: "System health" }
 ];
 
 export default function AdminDashboard() {
@@ -73,11 +68,8 @@ export default function AdminDashboard() {
   const [userSearch, setUserSearch] = useState("");
   const [auditLogs, setAuditLogs] = useState([]);
   const [health, setHealth] = useState(null);
-  const [settings, setSettings] = useState([]);
-  const [integrations, setIntegrations] = useState([]);
-  const [permMatrix, setPermMatrix] = useState(null);
-  const [backups, setBackups] = useState([]);
   const [masterCatalog, setMasterCatalog] = useState({ departments: [], job_titles: [], primary_skills: [] });
+  const [permMatrix, setPermMatrix] = useState(null);
   const [catalogRequests, setCatalogRequests] = useState([]);
   const [departmentInput, setDepartmentInput] = useState("");
   const [jobTitleInput, setJobTitleInput] = useState("");
@@ -91,13 +83,11 @@ export default function AdminDashboard() {
     role: "hr_admin"
   });
 
-  const [settingForm, setSettingForm] = useState({ key: "cors_origins", value: { origins: ["http://localhost:5173"] } });
-  const [integrationForm, setIntegrationForm] = useState({ name: "", type: "lms", enabled: false, config: {} });
-  const [backupLabel, setBackupLabel] = useState("Nightly snapshot");
-  const [settingJsonText, setSettingJsonText] = useState(JSON.stringify({ origins: ["http://localhost:5173"] }));
-  const [integrationJsonText, setIntegrationJsonText] = useState(JSON.stringify({}));
   const [uploadFile, setUploadFile] = useState(null);
   const [success, setSuccess] = useState("");
+  const [editOpen, setEditOpen] = useState(false);
+  const [editUser, setEditUser] = useState(null);
+  const [editForm, setEditForm] = useState({});
   const [roleFilter, setRoleFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
   const [page, setPage] = useState(0);
@@ -109,17 +99,15 @@ export default function AdminDashboard() {
   const [rowMenuAnchorEl, setRowMenuAnchorEl] = useState(null);
   const [rowMenuUser, setRowMenuUser] = useState(null);
   const [rowMenuPosition, setRowMenuPosition] = useState(null);
-  const exportUsersCsvUrl = `${api.defaults.baseURL}/admin/system/export/users.csv`;
 
   const kpis = useMemo(
     () => [
       { label: "Total users", value: allUsers.length },
       { label: "Active users", value: allUsers.filter((u) => u.status === "active").length },
       { label: "Pending approvals", value: pending.length },
-      { label: "Integrations", value: integrations.length },
       { label: "Audit events", value: auditLogs.length }
     ],
-    [allUsers, pending.length, integrations.length, auditLogs.length]
+    [allUsers, pending.length, auditLogs.length]
   );
 
   const sortedUsers = useMemo(() => {
@@ -160,14 +148,8 @@ export default function AdminDashboard() {
       setAuditLogs(aRes.data);
       const hRes = await api.get("/admin/system/health");
       setHealth(hRes.data);
-      const sRes = await api.get("/admin/system/settings");
-      setSettings(sRes.data);
-      const iRes = await api.get("/admin/system/integrations");
-      setIntegrations(iRes.data);
       const pm = await api.get("/admin/system/roles-permissions");
       setPermMatrix(pm.data?.matrix || null);
-      const bRes = await api.get("/admin/system/backups?limit=30");
-      setBackups(bRes.data);
       const catalogRes = await api.get("/master-data/catalog");
       setMasterCatalog(catalogRes.data || { departments: [], job_titles: [], primary_skills: [] });
       const requestsRes = await api.get("/master-data/requests");
@@ -188,8 +170,12 @@ export default function AdminDashboard() {
     const allowed = new Set(SECTIONS.map((s) => s.key));
     if (section && allowed.has(section)) {
       setActiveSection(section);
+    } else if (section && !allowed.has(section)) {
+      const next = new URLSearchParams(searchParams);
+      next.set("section", "users");
+      setSearchParams(next, { replace: true });
     }
-  }, [searchParams]);
+  }, [searchParams, setSearchParams]);
 
   async function approve(userId) {
     setError("");
@@ -315,6 +301,85 @@ export default function AdminDashboard() {
     setRowMenuPosition(null);
   }
 
+  async function downloadUsersCsv() {
+    setError("");
+    try {
+      const res = await api.get("/admin/system/export/users.csv", { responseType: "blob" });
+      const blob = new Blob([res.data], { type: "text/csv;charset=utf-8;" });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "users_export.csv";
+      a.click();
+      window.URL.revokeObjectURL(url);
+      setSuccess("User export downloaded.");
+    } catch (err) {
+      setError(getApiErrorMessage(err, "Export failed"));
+    }
+  }
+
+  function openEditUser(u) {
+    setEditUser(u);
+    setEditForm({
+      full_name: u.full_name || "",
+      email: u.email || "",
+      phone_number: u.phone_number || "",
+      country: u.country || "",
+      department: u.department || "",
+      job_title: u.job_title || "",
+      experience_level: u.experience_level || "",
+      primary_skill: u.primary_skill || "",
+      role: u.role || "employee",
+      status: u.status || "active",
+      manager_id: u.manager_id || ""
+    });
+    setEditOpen(true);
+  }
+
+  async function saveEditUser() {
+    if (!editUser) return;
+    setError("");
+    try {
+      const payload = {
+        full_name: editForm.full_name,
+        email: editForm.email,
+        phone_number: editForm.phone_number,
+        country: editForm.country,
+        department: editForm.department,
+        job_title: editForm.job_title,
+        experience_level: editForm.experience_level,
+        primary_skill: editForm.primary_skill
+      };
+      if (editUser.role !== "system_admin") {
+        payload.role = editForm.role;
+        payload.status = editForm.status;
+      }
+      if (editUser.role === "employee") {
+        const m = (editForm.manager_id || "").trim();
+        payload.manager_id = m || null;
+      }
+      await api.patch(`/admin/users/${editUser.id}`, payload);
+      setSuccess("User updated.");
+      setEditOpen(false);
+      setEditUser(null);
+      await load();
+    } catch (err) {
+      setError(getApiErrorMessage(err, "Failed to update user"));
+    }
+  }
+
+  async function deleteAdminUser(user) {
+    setError("");
+    try {
+      await api.delete(`/admin/users/${user.id}`);
+      setSuccess(`Deleted ${user.email}.`);
+      closeRowMenu();
+      await load();
+    } catch (err) {
+      setError(getApiErrorMessage(err, "Failed to delete user"));
+    }
+  }
+
   async function addCatalogValue(endpoint, name, clearFn) {
     if (!name.trim()) return;
     setError("");
@@ -339,58 +404,23 @@ export default function AdminDashboard() {
     }
   }
 
-  async function upsertSetting(e) {
-    e.preventDefault();
-    setError("");
-    try {
-      const parsed = JSON.parse(settingJsonText);
-      await api.put("/admin/system/settings", { ...settingForm, value: parsed });
-      setSuccess("System setting saved.");
-      await load();
-    } catch (err) {
-      setError(getApiErrorMessage(err, "Invalid JSON or failed to save setting"));
-    }
-  }
-
-  async function upsertIntegration(e) {
-    e.preventDefault();
-    setError("");
-    try {
-      const parsed = JSON.parse(integrationJsonText);
-      await api.put("/admin/system/integrations", { ...integrationForm, config: parsed });
-      setIntegrationForm({ name: "", type: "lms", enabled: false, config: {} });
-      setIntegrationJsonText(JSON.stringify({}));
-      setSuccess("Integration updated.");
-      await load();
-    } catch (err) {
-      setError(getApiErrorMessage(err, "Invalid JSON or failed to save integration"));
-    }
-  }
-
-  async function requestBackup(e) {
-    e.preventDefault();
-    setError("");
-    try {
-      await api.post("/admin/system/backups", { label: backupLabel });
-      setSuccess("Backup request submitted.");
-      await load();
-    } catch (err) {
-      setError(getApiErrorMessage(err, "Failed to request backup"));
-    }
-  }
-
   async function uploadImportFile() {
     if (!uploadFile) return;
     setError("");
     try {
       const fd = new FormData();
       fd.append("file", uploadFile);
-      await api.post("/admin/system/import/users", fd, { headers: { "Content-Type": "multipart/form-data" } });
+      const res = await api.post("/admin/system/import/users", fd, { headers: { "Content-Type": "multipart/form-data" } });
       setUploadFile(null);
-      setSuccess("Import file uploaded.");
+      const { created, updated, errors, message } = res.data || {};
+      const errText =
+        Array.isArray(errors) && errors.length
+          ? ` Row errors: ${errors.slice(0, 5).map((e) => `row ${e.row}: ${e.detail}`).join("; ")}${errors.length > 5 ? "…" : ""}`
+          : "";
+      setSuccess(`${message || "Import complete."}${errText}`);
       await load();
     } catch (err) {
-      setError(getApiErrorMessage(err, "Failed to upload import file"));
+      setError(getApiErrorMessage(err, "Failed to import users"));
     }
   }
 
@@ -426,7 +456,7 @@ export default function AdminDashboard() {
               <Box>
                 <Typography variant="h5" fontWeight={800}>System Admin Control Center</Typography>
                 <Typography variant="body2" color="text.secondary">
-                  Monitor platform health, manage users, configure integrations, and govern core data.
+                  Monitor platform health, manage users, audit activity, and import or export directory data.
                 </Typography>
               </Box>
               <Stack direction={{ xs: "column", sm: "row" }} spacing={1} width={{ xs: "100%", md: "auto" }}>
@@ -453,7 +483,7 @@ export default function AdminDashboard() {
 
         <Grid container spacing={2}>
           {kpis.map((k, idx) => (
-            <Grid item xs={12} sm={6} md={4} lg={2.4} key={k.label}>
+            <Grid item xs={12} sm={6} md={3} key={k.label}>
               <Card
                 variant="outlined"
                 sx={{
@@ -841,6 +871,24 @@ export default function AdminDashboard() {
                                 >
                                   Reset password
                                 </Button>
+                                <Button size="small" variant="outlined" onClick={() => openEditUser(u)} fullWidth>
+                                  Edit user
+                                </Button>
+                                <Button
+                                  size="small"
+                                  variant="outlined"
+                                  color="error"
+                                  fullWidth
+                                  onClick={() =>
+                                    setConfirmAction({
+                                      title: "Permanently delete user?",
+                                      description: `Delete ${u.full_name} (${u.email}). This cannot be undone.`,
+                                      onConfirm: () => deleteAdminUser(u)
+                                    })
+                                  }
+                                >
+                                  Delete user
+                                </Button>
                               </Stack>
                             </Stack>
                           </CardContent>
@@ -1114,148 +1162,6 @@ export default function AdminDashboard() {
               </SectionPanel>
             ) : null}
 
-            {!loading && activeSection === "config" ? (
-              <SectionPanel>
-                <Typography variant="h6" fontWeight={800}>
-                  System configuration
-                </Typography>
-                <Divider sx={{ my: 2 }} />
-                <Stack spacing={2} component="form" onSubmit={upsertSetting}>
-                  <TextField
-                    label="Setting key"
-                    value={settingForm.key}
-                    onChange={(e) => setSettingForm({ ...settingForm, key: e.target.value })}
-                    fullWidth
-                    required
-                  />
-                  <TextField
-                    label="Setting value (JSON)"
-                    value={settingJsonText}
-                    onChange={(e) => setSettingJsonText(e.target.value)}
-                    fullWidth
-                    multiline
-                    minRows={3}
-                    helperText="Valid JSON required"
-                  />
-                  <Stack direction="row" justifyContent="flex-end">
-                    <Button type="submit" variant="contained">
-                      Save setting
-                    </Button>
-                  </Stack>
-                </Stack>
-                <Divider sx={{ my: 2 }} />
-                <TableContainer>
-                  <Table size="small">
-                    <TableHead>
-                      <TableRow>
-                        <TableCell>Key</TableCell>
-                        <TableCell>Value</TableCell>
-                        <TableCell>Updated at</TableCell>
-                      </TableRow>
-                    </TableHead>
-                    <TableBody>
-                      {settings.map((s) => (
-                        <TableRow key={s.id}>
-                          <TableCell>{s.key}</TableCell>
-                          <TableCell sx={{ maxWidth: 360, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                            {JSON.stringify(s.value)}
-                          </TableCell>
-                          <TableCell>{new Date(s.updated_at).toLocaleString()}</TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </TableContainer>
-              </SectionPanel>
-            ) : null}
-
-            {!loading && activeSection === "integrations" ? (
-              <SectionPanel>
-                <Typography variant="h6" fontWeight={800}>
-                  Integration settings
-                </Typography>
-                <Divider sx={{ my: 2 }} />
-                <Stack spacing={2} component="form" onSubmit={upsertIntegration}>
-                  <Grid container spacing={2}>
-                    <Grid item xs={12} md={5}>
-                      <TextField
-                        label="Name"
-                        value={integrationForm.name}
-                        onChange={(e) => setIntegrationForm({ ...integrationForm, name: e.target.value })}
-                        fullWidth
-                        required
-                      />
-                    </Grid>
-                    <Grid item xs={12} md={4}>
-                      <TextField
-                        label="Type"
-                        value={integrationForm.type}
-                        onChange={(e) => setIntegrationForm({ ...integrationForm, type: e.target.value })}
-                        fullWidth
-                        required
-                        select
-                        SelectProps={{ native: true }}
-                      >
-                        <option value="hris">HRIS</option>
-                        <option value="lms">LMS</option>
-                        <option value="jira">Jira</option>
-                        <option value="asana">Asana</option>
-                      </TextField>
-                    </Grid>
-                    <Grid item xs={12} md={3}>
-                      <FormControlLabel
-                        control={
-                          <Switch
-                            checked={integrationForm.enabled}
-                            onChange={(e) => setIntegrationForm({ ...integrationForm, enabled: e.target.checked })}
-                          />
-                        }
-                        label="Enabled"
-                      />
-                    </Grid>
-                    <Grid item xs={12}>
-                      <TextField
-                        label="Config (JSON)"
-                        value={integrationJsonText}
-                        onChange={(e) => setIntegrationJsonText(e.target.value)}
-                        fullWidth
-                        multiline
-                        minRows={3}
-                      />
-                    </Grid>
-                  </Grid>
-                  <Stack direction="row" justifyContent="flex-end">
-                    <Button type="submit" variant="contained">
-                      Save integration
-                    </Button>
-                  </Stack>
-                </Stack>
-                <Divider sx={{ my: 2 }} />
-                <TableContainer>
-                  <Table size="small">
-                    <TableHead>
-                      <TableRow>
-                        <TableCell>Name</TableCell>
-                        <TableCell>Type</TableCell>
-                        <TableCell>Enabled</TableCell>
-                        <TableCell>Updated at</TableCell>
-                      </TableRow>
-                    </TableHead>
-                    <TableBody>
-                      {integrations.map((i) => (
-                        <TableRow key={i.id}>
-                          <TableCell>{i.name}</TableCell>
-                          <TableCell>{i.type}</TableCell>
-                          <TableCell>{i.enabled ? "Yes" : "No"}</TableCell>
-                          <TableCell>{new Date(i.updated_at).toLocaleString()}</TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </TableContainer>
-              </SectionPanel>
-            ) : null}
-
             {!loading && activeSection === "audit" ? (
               <SectionPanel>
                 <Typography variant="h6" fontWeight={800}>
@@ -1315,9 +1221,14 @@ export default function AdminDashboard() {
                 <Typography variant="h6" fontWeight={800}>
                   Data import / export tools
                 </Typography>
+                <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                  Export matches the import template (UTF-8 CSV with header). Re-importing the same file updates existing users by{" "}
+                  <code>id</code> or <code>email</code>. New rows need at least <code>email</code> and optional{" "}
+                  <code>role</code>, <code>status</code>, profile fields, and <code>password</code> (otherwise a temporary password is set and the user must change it on first login).
+                </Typography>
                 <Divider sx={{ my: 2 }} />
                 <Stack direction={{ xs: "column", md: "row" }} spacing={2} alignItems={{ xs: "stretch", md: "center" }}>
-                  <Button variant="contained" href={exportUsersCsvUrl}>
+                  <Button variant="contained" onClick={() => void downloadUsersCsv()}>
                     Export users CSV
                   </Button>
                   <Button variant="outlined" component="label">
@@ -1329,8 +1240,8 @@ export default function AdminDashboard() {
                       onChange={(e) => setUploadFile(e.target.files?.[0] || null)}
                     />
                   </Button>
-                  <Button variant="contained" onClick={uploadImportFile} disabled={!uploadFile}>
-                    Upload import file
+                  <Button variant="contained" onClick={() => void uploadImportFile()} disabled={!uploadFile}>
+                    Run import
                   </Button>
                   <Typography variant="body2" color="text.secondary">
                     {uploadFile ? `Selected: ${uploadFile.name}` : "No file selected"}
@@ -1356,55 +1267,112 @@ export default function AdminDashboard() {
               </SectionPanel>
             ) : null}
 
-            {!loading && activeSection === "backup" ? (
-              <SectionPanel>
-                <Typography variant="h6" fontWeight={800}>
-                  Backup & recovery
-                </Typography>
-                <Divider sx={{ my: 2 }} />
-                <Stack component="form" spacing={2} onSubmit={requestBackup}>
-                  <TextField
-                    label="Backup label"
-                    value={backupLabel}
-                    onChange={(e) => setBackupLabel(e.target.value)}
-                    fullWidth
-                    required
-                  />
-                  <Stack direction="row" justifyContent="flex-end">
-                    <Button type="submit" variant="contained">
-                      Request backup
-                    </Button>
-                  </Stack>
-                </Stack>
-                <Divider sx={{ my: 2 }} />
-                <TableContainer>
-                  <Table size="small">
-                    <TableHead>
-                      <TableRow>
-                        <TableCell>Label</TableCell>
-                        <TableCell>Status</TableCell>
-                        <TableCell>Requested by</TableCell>
-                        <TableCell>Created at</TableCell>
-                      </TableRow>
-                    </TableHead>
-                    <TableBody>
-                      {backups.map((b) => (
-                        <TableRow key={b.id}>
-                          <TableCell>{b.label}</TableCell>
-                          <TableCell>{b.status}</TableCell>
-                          <TableCell>{b.requested_by_user_id}</TableCell>
-                          <TableCell>{new Date(b.created_at).toLocaleString()}</TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </TableContainer>
-              </SectionPanel>
-            ) : null}
             </div>
           </Grid>
         </Grid>
       </Stack>
+      <Dialog open={editOpen} onClose={() => setEditOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>Edit user</DialogTitle>
+        <DialogContent>
+          <Stack spacing={2} sx={{ mt: 1 }}>
+            <TextField
+              label="Full name"
+              value={editForm.full_name || ""}
+              onChange={(e) => setEditForm({ ...editForm, full_name: e.target.value })}
+              fullWidth
+            />
+            <TextField
+              label="Email"
+              type="email"
+              value={editForm.email || ""}
+              onChange={(e) => setEditForm({ ...editForm, email: e.target.value })}
+              fullWidth
+            />
+            <TextField
+              label="Phone"
+              value={editForm.phone_number || ""}
+              onChange={(e) => setEditForm({ ...editForm, phone_number: e.target.value })}
+              fullWidth
+            />
+            <TextField
+              label="Country"
+              value={editForm.country || ""}
+              onChange={(e) => setEditForm({ ...editForm, country: e.target.value })}
+              fullWidth
+            />
+            <TextField
+              label="Department"
+              value={editForm.department || ""}
+              onChange={(e) => setEditForm({ ...editForm, department: e.target.value })}
+              fullWidth
+            />
+            <TextField
+              label="Job title"
+              value={editForm.job_title || ""}
+              onChange={(e) => setEditForm({ ...editForm, job_title: e.target.value })}
+              fullWidth
+            />
+            <TextField
+              label="Experience level"
+              value={editForm.experience_level || ""}
+              onChange={(e) => setEditForm({ ...editForm, experience_level: e.target.value })}
+              fullWidth
+            />
+            <TextField
+              label="Primary skill"
+              value={editForm.primary_skill || ""}
+              onChange={(e) => setEditForm({ ...editForm, primary_skill: e.target.value })}
+              fullWidth
+            />
+            {editUser?.role === "employee" ? (
+              <TextField
+                label="Manager user ID (UUID)"
+                value={editForm.manager_id || ""}
+                onChange={(e) => setEditForm({ ...editForm, manager_id: e.target.value })}
+                fullWidth
+                helperText="Leave empty to clear manager assignment"
+              />
+            ) : null}
+            {editUser?.role !== "system_admin" ? (
+              <>
+                <TextField
+                  label="Role"
+                  value={editForm.role || "employee"}
+                  onChange={(e) => setEditForm({ ...editForm, role: e.target.value })}
+                  fullWidth
+                  select
+                  SelectProps={{ native: true }}
+                >
+                  <option value="employee">employee</option>
+                  <option value="manager">manager</option>
+                  <option value="hr_admin">hr_admin</option>
+                  <option value="executive">executive</option>
+                </TextField>
+                <TextField
+                  label="Status"
+                  value={editForm.status || "active"}
+                  onChange={(e) => setEditForm({ ...editForm, status: e.target.value })}
+                  fullWidth
+                  select
+                  SelectProps={{ native: true }}
+                >
+                  <option value="active">active</option>
+                  <option value="disabled">disabled</option>
+                  <option value="pending_approval">pending_approval</option>
+                </TextField>
+              </>
+            ) : (
+              <Alert severity="info">System administrator: role and status are locked; profile fields can be updated.</Alert>
+            )}
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setEditOpen(false)}>Cancel</Button>
+          <Button variant="contained" onClick={() => void saveEditUser()}>
+            Save changes
+          </Button>
+        </DialogActions>
+      </Dialog>
       <Dialog open={Boolean(confirmAction)} onClose={() => setConfirmAction(null)}>
         <DialogTitle>{confirmAction?.title}</DialogTitle>
         <DialogContent>
@@ -1449,6 +1417,30 @@ export default function AdminDashboard() {
           }
         }}
       >
+        <MenuItem
+          onClick={() => {
+            const user = rowMenuUser;
+            closeRowMenu();
+            if (user) openEditUser(user);
+          }}
+        >
+          Edit user
+        </MenuItem>
+        <MenuItem
+          sx={{ color: "error.main" }}
+          onClick={() => {
+            const user = rowMenuUser;
+            closeRowMenu();
+            if (!user) return;
+            setConfirmAction({
+              title: "Permanently delete user?",
+              description: `Delete ${user.full_name} (${user.email}). This cannot be undone.`,
+              onConfirm: () => deleteAdminUser(user)
+            });
+          }}
+        >
+          Delete user
+        </MenuItem>
         {rowMenuUser?.status !== "active" ? (
           <MenuItem
             onClick={() => {

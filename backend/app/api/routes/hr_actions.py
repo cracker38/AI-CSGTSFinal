@@ -25,6 +25,7 @@ from app.services.training_assignments import (
 from app.services.training_materials import get_material_download_path, save_training_course_material
 from app.schemas.hr_action import (
     ComplianceRenewalRequest,
+    CvFeedbackNoteRequest,
     CvValidationDecisionRequest,
     HrActionPublic,
     PromotionRecommendRequest,
@@ -77,8 +78,8 @@ def decide_cv_validation(
     else:
         ai["primary_skill_validated"] = False
         ai["cv_validation_decision"] = "rejected"
-    if body.note:
-        ai["cv_validation_note"] = body.note
+    if body.note is not None and str(body.note).strip():
+        ai["cv_validation_note"] = str(body.note).strip()
     profile.ai_profile = ai
     db.add(profile)
 
@@ -102,6 +103,46 @@ def decide_cv_validation(
         entity_type="user",
         entity_id=str(user.id),
         meta={"hr_action_id": str(action.id), "decision": body.decision},
+    )
+    return action
+
+
+@router.post("/hr/actions/cv-feedback-note", response_model=HrActionPublic)
+def post_cv_feedback_note(
+    body: CvFeedbackNoteRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    actor: User = Depends(require_roles(UserRole.hr_admin)),
+) -> HrAction:
+    user = _get_employee_or_400(db, body.user_id)
+    profile = _profile_for_user(db, user.id)
+    ai = dict(profile.ai_profile or {})
+    note = body.note.strip()
+    ai["cv_validation_note"] = note
+    ai["cv_validation_note_at"] = datetime.now(timezone.utc).isoformat()
+    profile.ai_profile = ai
+    db.add(profile)
+
+    action = HrAction(
+        target_user_id=user.id,
+        created_by_id=actor.id,
+        action_type="cv_feedback_note",
+        status="completed",
+        note=note,
+        payload={"channel": "cv_note"},
+    )
+    db.add(action)
+    db.commit()
+    db.refresh(action)
+
+    write_audit_log(
+        db,
+        request=request,
+        actor_user_id=actor.id,
+        action="hr.cv_feedback_note",
+        entity_type="user",
+        entity_id=str(user.id),
+        meta={"hr_action_id": str(action.id)},
     )
     return action
 

@@ -1,17 +1,21 @@
+import csv
+import io
 import uuid
 
-from fastapi import APIRouter, Depends, Query, Response, UploadFile, File, HTTPException, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile, status
 from sqlalchemy import desc
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.api.deps import require_roles
+from app.core.security import hash_password
 from app.db.session import get_db
 from app.models.audit_log import AuditLog
 from app.models.backup_job import BackupJob, BackupStatus
 from app.models.integration import Integration, IntegrationType
 from app.models.system_setting import SystemSetting
-from app.models.user import User, UserRole
+from app.models.employee_profile import EmployeeProfile
+from app.models.user import AccountStatus, User, UserRole
 from app.schemas.admin import AuditLogPublic
 from app.schemas.system_admin import (
     BackupJobPublic,
@@ -25,6 +29,117 @@ from app.services.audit import write_audit_log
 
 
 router = APIRouter()
+
+IMPORT_DEFAULT_PASSWORD = "ImportedUser123!"
+
+
+def _csv_row_norm(raw: dict) -> dict[str, str]:
+    return {(str(k) or "").strip().lower(): (str(v) if v is not None else "").strip() for k, v in raw.items()}
+
+
+def _g(r: dict[str, str], key: str) -> str:
+    return r.get(key.lower(), "").strip()
+
+
+def _apply_user_import_row(db: Session, admin: User, raw: dict) -> str:
+    r = _csv_row_norm(raw)
+    rid = _g(r, "id")
+    email = _g(r, "email")
+
+    user: User | None = None
+    if rid:
+        try:
+            uid = uuid.UUID(rid)
+            user = db.query(User).filter(User.id == uid).one_or_none()
+        except ValueError:
+            user = None
+    if user is None and email:
+        user = db.query(User).filter(User.email == email.lower()).one_or_none()
+
+    def pick(field: str, default: str = "N/A") -> str:
+        v = _g(r, field)
+        return v if v else default
+
+    role_str = pick("role", "employee")
+    if role_str == UserRole.system_admin.value:
+        raise ValueError("system_admin cannot be created or updated via CSV import")
+
+    if user:
+        if user.role == UserRole.system_admin:
+            if _g(r, "role") or _g(r, "status"):
+                raise ValueError("cannot change system_admin role/status via import")
+        pairs = [
+            ("full_name", "full_name"),
+            ("phone_number", "phone_number"),
+            ("country", "country"),
+            ("department", "department"),
+            ("job_title", "job_title"),
+            ("experience_level", "experience_level"),
+            ("primary_skill", "primary_skill"),
+        ]
+        for csv_key, attr in pairs:
+            if _g(r, csv_key):
+                setattr(user, attr, _g(r, csv_key))
+        if _g(r, "email"):
+            em = _g(r, "email").lower()
+            if em != user.email:
+                if db.query(User).filter(User.email == em, User.id != user.id).first():
+                    raise ValueError("email already in use")
+                user.email = em
+        if _g(r, "role"):
+            user.role = UserRole(role_str)
+        if _g(r, "status"):
+            user.status = AccountStatus(_g(r, "status"))
+        if _g(r, "password"):
+            user.password_hash = hash_password(_g(r, "password"))
+            user.must_change_password = True
+        mid_s = _g(r, "manager_id")
+        if mid_s and user.role == UserRole.employee:
+            mid = uuid.UUID(mid_s)
+            mgr = db.query(User).filter(User.id == mid, User.role == UserRole.manager).one_or_none()
+            if not mgr:
+                raise ValueError("invalid manager_id")
+            user.manager_id = mid
+        elif _g(r, "manager_id") == "" and user.role == UserRole.employee:
+            user.manager_id = None
+        db.flush()
+        return "updated"
+
+    if not email:
+        raise ValueError("email is required to create a user")
+
+    role = UserRole(role_str)
+    status_s = pick("status", "pending_approval")
+    acc_status = AccountStatus(status_s)
+    pw_plain = _g(r, "password") or IMPORT_DEFAULT_PASSWORD
+    nu = User(
+        email=email.lower(),
+        full_name=pick("full_name", "Imported User"),
+        phone_number=pick("phone_number"),
+        country=pick("country"),
+        department=pick("department"),
+        job_title=pick("job_title"),
+        experience_level=pick("experience_level", "Intermediate"),
+        primary_skill=pick("primary_skill", "general"),
+        role=role,
+        status=acc_status,
+        password_hash=hash_password(pw_plain),
+        must_change_password=True,
+        approved_by_user_id=admin.id,
+    )
+    mid_s = _g(r, "manager_id")
+    if mid_s and role == UserRole.employee:
+        mid = uuid.UUID(mid_s)
+        mgr = db.query(User).filter(User.id == mid, User.role == UserRole.manager).one_or_none()
+        if not mgr:
+            raise ValueError("invalid manager_id")
+        nu.manager_id = mid
+    db.add(nu)
+    db.flush()
+    if role == UserRole.employee:
+        db.add(EmployeeProfile(user_id=nu.id, headline=None, cv_extract={}, ai_profile={}))
+    db.flush()
+    return "created"
 
 
 @router.get("/audit-logs", response_model=list[AuditLogPublic])
@@ -72,7 +187,7 @@ def roles_permissions(
         "employee": ["self_profile", "self_skills", "self_assessment", "self_gaps", "training_recs", "goals", "notifications"],
         "manager": ["team_directory", "team_gaps", "approvals", "team_projects", "availability", "alerts"],
         "hr_admin": ["org_records", "org_gaps", "training_planning", "budget", "compliance", "recruitment_insights", "cv_validation"],
-        "system_admin": ["user_management", "role_control", "system_config", "integrations", "audit_logs", "import_export", "health", "backup"],
+        "system_admin": ["user_management", "role_control", "audit_logs", "import_export", "health"],
     }
     return {"matrix": matrix}
 
@@ -201,34 +316,99 @@ def export_users_csv(
     _: User = Depends(require_roles(UserRole.system_admin)),
 ) -> Response:
     users = db.query(User).order_by(User.created_at.asc()).all()
-    header = "id,email,full_name,role,status,created_at\n"
-    lines = [header]
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(
+        [
+            "id",
+            "email",
+            "full_name",
+            "phone_number",
+            "country",
+            "department",
+            "job_title",
+            "experience_level",
+            "primary_skill",
+            "role",
+            "status",
+            "must_change_password",
+            "manager_id",
+            "created_at",
+        ]
+    )
     for u in users:
-        lines.append(f"{u.id},{u.email},{u.full_name},{u.role.value},{u.status.value},{u.created_at.isoformat()}\n")
-    content = "".join(lines).encode("utf-8")
-    return Response(content=content, media_type="text/csv")
+        writer.writerow(
+            [
+                str(u.id),
+                u.email,
+                u.full_name,
+                u.phone_number,
+                u.country,
+                u.department,
+                u.job_title,
+                u.experience_level,
+                u.primary_skill,
+                u.role.value,
+                u.status.value,
+                "true" if u.must_change_password else "false",
+                str(u.manager_id) if getattr(u, "manager_id", None) else "",
+                u.created_at.isoformat() if u.created_at else "",
+            ]
+        )
+    content = buf.getvalue().encode("utf-8-sig")
+    return Response(
+        content=content,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="users_export.csv"'},
+    )
 
 
 @router.post("/import/users")
 async def import_users_csv(
+    request: Request,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
     admin: User = Depends(require_roles(UserRole.system_admin)),
 ) -> dict:
     if (file.content_type or "").lower() not in {"text/csv", "application/vnd.ms-excel", "application/octet-stream"}:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="CSV required")
-    data = (await file.read()).decode("utf-8", errors="replace")
-    # MVP: accept CSV and store audit event; actual bulk import is enterprise-hardening work (validation, rollback).
+    raw_bytes = await file.read()
+    data = raw_bytes.decode("utf-8-sig", errors="replace")
+    reader = csv.DictReader(io.StringIO(data))
+    if not reader.fieldnames:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="CSV must include a header row")
+
+    created = 0
+    updated = 0
+    errors: list[dict] = []
+    for i, row in enumerate(reader, start=2):
+        try:
+            kind = _apply_user_import_row(db, admin, row)
+            db.commit()
+            if kind == "created":
+                created += 1
+            else:
+                updated += 1
+        except Exception as e:
+            db.rollback()
+            errors.append({"row": i, "detail": str(e)[:400]})
+
     write_audit_log(
         db,
-        request=None,
+        request=request,
         actor_user_id=admin.id,
-        action="admin.import_users_received",
+        action="admin.import_users",
         entity_type="file",
         entity_id=str(uuid.uuid4()),
-        meta={"filename": file.filename, "bytes": len(data.encode('utf-8'))},
+        meta={"filename": file.filename, "created": created, "updated": updated, "error_count": len(errors)},
     )
-    return {"ok": True, "note": "CSV received and logged. Bulk import execution can be enabled next."}
+    return {
+        "ok": len(errors) == 0,
+        "created": created,
+        "updated": updated,
+        "errors": errors,
+        "message": f"Import finished: {created} created, {updated} updated, {len(errors)} row errors.",
+    }
 
 
 @router.get("/backups", response_model=list[BackupJobPublic])
