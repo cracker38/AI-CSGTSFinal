@@ -79,6 +79,7 @@ export default function HrDashboard() {
   const [gapSeverity, setGapSeverity] = useState({ HIGH: 0, MEDIUM: 0, LOW: 0 });
   const [deptGaps, setDeptGaps] = useState([]);
   const [cvValidation, setCvValidation] = useState([]);
+  const [cvPendingCount, setCvPendingCount] = useState(0);
   const [trainingPlan, setTrainingPlan] = useState({ budget: { total: 0, used: 0, remaining: 0 }, programs: [], roi_estimate: 0 });
   const [complianceData, setComplianceData] = useState({ rows: [], alerts: { expiring_soon: 0, missing: 0 } });
   const [recruitmentData, setRecruitmentData] = useState({ missing_skills: [], hiring_suggestions: [] });
@@ -97,6 +98,7 @@ export default function HrDashboard() {
   const [snackbar, setSnackbar] = useState({ open: false, message: "" });
   const [cvDialog, setCvDialog] = useState(null);
   const [cvNote, setCvNote] = useState("");
+  const [cvViewer, setCvViewer] = useState(null);
   const [trainingDialog, setTrainingDialog] = useState(null);
   const [trainingUserId, setTrainingUserId] = useState("");
   const [trainingNote, setTrainingNote] = useState("");
@@ -148,6 +150,7 @@ export default function HrDashboard() {
       setKpis(oRes.data);
       const cvRes = await api.get("/analytics/hr/cv-validation");
       setCvValidation(cvRes.data?.rows || []);
+      setCvPendingCount(Number(cvRes.data?.pending_count) || 0);
       const trRes = await api.get("/analytics/hr/training-planning");
       setTrainingPlan(trRes.data || { budget: { total: 0, used: 0, remaining: 0 }, programs: [], roi_estimate: 0 });
       const trainOpenRes = await api.get("/analytics/hr/training-assignments");
@@ -286,6 +289,30 @@ export default function HrDashboard() {
       URL.revokeObjectURL(url);
     } catch (err) {
       setError(getApiErrorMessage(err, "Download failed"));
+    }
+  }
+
+  function closeCvViewer() {
+    if (cvViewer?.blobUrl) URL.revokeObjectURL(cvViewer.blobUrl);
+    setCvViewer(null);
+  }
+
+  async function hrViewEmployeeCv(userId, displayName, filename) {
+    setError("");
+    if (cvViewer?.blobUrl) URL.revokeObjectURL(cvViewer.blobUrl);
+    setCvViewer({ loading: true, title: displayName || "Employee CV", blobUrl: null });
+    try {
+      const res = await api.get(`/analytics/hr/employees/${userId}/cv`, { responseType: "blob" });
+      const blob = res.data instanceof Blob ? res.data : new Blob([res.data], { type: "application/pdf" });
+      const url = URL.createObjectURL(blob);
+      setCvViewer({
+        loading: false,
+        title: filename ? `${displayName} — ${filename}` : `${displayName} — official CV`,
+        blobUrl: url
+      });
+    } catch (err) {
+      closeCvViewer();
+      setError(getApiErrorMessage(err, "Could not load official CV"));
     }
   }
 
@@ -873,9 +900,18 @@ export default function HrDashboard() {
                             </TableCell>
                             <TableCell>{u.status}</TableCell>
                             <TableCell align="right">
-                              <Button size="small" variant="outlined" onClick={() => assignManager(u.id)}>
-                                Save
-                              </Button>
+                              <Stack direction="row" spacing={0.5} justifyContent="flex-end" flexWrap="wrap" useFlexGap>
+                                <Button
+                                  size="small"
+                                  variant="outlined"
+                                  onClick={() => hrViewEmployeeCv(u.id, u.full_name, null)}
+                                >
+                                  View CV
+                                </Button>
+                                <Button size="small" variant="outlined" onClick={() => assignManager(u.id)}>
+                                  Save
+                                </Button>
+                              </Stack>
                             </TableCell>
                           </TableRow>
                         ))}
@@ -909,9 +945,18 @@ export default function HrDashboard() {
                               <TableCell>{u.department}</TableCell>
                               <TableCell>{u.role}</TableCell>
                               <TableCell align="right">
-                                <Button size="small" variant="contained" onClick={() => approve(u.id)}>
-                                  Approve
-                                </Button>
+                                <Stack direction="row" spacing={0.5} justifyContent="flex-end" flexWrap="wrap" useFlexGap>
+                                  <Button
+                                    size="small"
+                                    variant="outlined"
+                                    onClick={() => hrViewEmployeeCv(u.id, u.full_name, null)}
+                                  >
+                                    View CV
+                                  </Button>
+                                  <Button size="small" variant="contained" onClick={() => approve(u.id)}>
+                                    Approve
+                                  </Button>
+                                </Stack>
                               </TableCell>
                             </TableRow>
                           ))}
@@ -1559,47 +1604,102 @@ export default function HrDashboard() {
                   <Typography variant="h6" fontWeight={800}>
                     CV validation & skill verification
                   </Typography>
+                  <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                    Review the official PDF résumé each employee uploaded at registration (or re-uploaded from their dashboard), then approve or reject the declared primary skill.
+                  </Typography>
                   <Divider sx={{ my: 2 }} />
                   {cvValidation.length === 0 ? (
-                    <Alert severity="success">No primary-skill mismatches detected.</Alert>
-                  ) : null}
-                  <TableContainer>
-                    <Table size="small">
-                      <TableHead>
-                        <TableRow>
-                          <TableCell>Employee</TableCell>
-                          <TableCell>Email</TableCell>
-                          <TableCell>Declared primary skill</TableCell>
-                          <TableCell>CV skills (sample)</TableCell>
-                          <TableCell>Status</TableCell>
-                          <TableCell align="right">HR action</TableCell>
-                        </TableRow>
-                      </TableHead>
-                      <TableBody>
-                        {cvValidation.slice(0, 30).map((r) => (
-                          <TableRow key={r.user_id}>
-                            <TableCell>{r.employee}</TableCell>
-                            <TableCell>{r.email}</TableCell>
-                            <TableCell>{r.declared_primary_skill}</TableCell>
-                            <TableCell sx={{ maxWidth: 380, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                              {(r.cv_skills || []).join(", ")}
-                            </TableCell>
-                            <TableCell>{r.status}</TableCell>
-                            <TableCell align="right">
-                              <Stack direction="row" spacing={0.5} justifyContent="flex-end" flexWrap="wrap" useFlexGap>
-                                <Button size="small" color="success" variant="outlined" onClick={() => { setCvNote(""); setCvDialog({ userId: r.user_id, name: r.employee, decision: "approve" }); }}>
-                                  Approve
-                                </Button>
-                                <Button size="small" color="error" variant="outlined" onClick={() => { setCvNote(""); setCvDialog({ userId: r.user_id, name: r.employee, decision: "reject" }); }}>
-                                  Reject
-                                </Button>
-                              </Stack>
-                            </TableCell>
+                    <Alert severity="info">No active employees in the workforce yet.</Alert>
+                  ) : cvPendingCount === 0 ? (
+                    <Alert severity="success" sx={{ mb: 2 }}>
+                      No primary-skill mismatches pending — all listed employees are validated. You can still open each official PDF below.
+                    </Alert>
+                  ) : (
+                    <Alert severity="warning" sx={{ mb: 2 }}>
+                      {cvPendingCount} employee{cvPendingCount === 1 ? "" : "s"} need primary-skill validation. Review the PDF, then approve or reject.
+                    </Alert>
+                  )}
+                  {cvValidation.length > 0 ? (
+                    <TableContainer>
+                      <Table size="small">
+                        <TableHead>
+                          <TableRow>
+                            <TableCell>Employee</TableCell>
+                            <TableCell>Email</TableCell>
+                            <TableCell>Declared primary skill</TableCell>
+                            <TableCell>CV skills (sample)</TableCell>
+                            <TableCell>Status</TableCell>
+                            <TableCell>Uploaded</TableCell>
+                            <TableCell align="right">Official CV</TableCell>
+                            <TableCell align="right">HR action</TableCell>
                           </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  </TableContainer>
+                        </TableHead>
+                        <TableBody>
+                          {cvValidation.slice(0, 50).map((r) => (
+                            <TableRow key={r.user_id}>
+                              <TableCell>{r.employee}</TableCell>
+                              <TableCell>{r.email}</TableCell>
+                              <TableCell>{r.declared_primary_skill}</TableCell>
+                              <TableCell sx={{ maxWidth: 380, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                                {(r.cv_skills || []).join(", ") || "—"}
+                              </TableCell>
+                              <TableCell>{r.status}</TableCell>
+                              <TableCell>
+                                {r.cv_uploaded_at ? String(r.cv_uploaded_at).slice(0, 10) : "—"}
+                              </TableCell>
+                              <TableCell align="right">
+                                {r.has_cv_file ? (
+                                  <Button
+                                    size="small"
+                                    variant="outlined"
+                                    onClick={() => hrViewEmployeeCv(r.user_id, r.employee, r.original_filename)}
+                                  >
+                                    View PDF
+                                  </Button>
+                                ) : (
+                                  <Typography variant="caption" color="text.secondary">
+                                    No file
+                                  </Typography>
+                                )}
+                              </TableCell>
+                              <TableCell align="right">
+                                {r.status === "Needs Validation" ? (
+                                  <Stack direction="row" spacing={0.5} justifyContent="flex-end" flexWrap="wrap" useFlexGap>
+                                    <Button
+                                      size="small"
+                                      color="success"
+                                      variant="outlined"
+                                      onClick={() => {
+                                        setCvNote("");
+                                        setCvDialog({ userId: r.user_id, name: r.employee, decision: "approve" });
+                                      }}
+                                    >
+                                      Approve
+                                    </Button>
+                                    <Button
+                                      size="small"
+                                      color="error"
+                                      variant="outlined"
+                                      onClick={() => {
+                                        setCvNote("");
+                                        setCvDialog({ userId: r.user_id, name: r.employee, decision: "reject" });
+                                      }}
+                                    >
+                                      Reject
+                                    </Button>
+                                  </Stack>
+                                ) : (
+                                  <Typography variant="caption" color="text.secondary">
+                                    —
+                                  </Typography>
+                                )}
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </TableContainer>
+                  ) : null}
                 </CardContent>
               </Card>
             ) : null}
@@ -1644,6 +1744,22 @@ export default function HrDashboard() {
           </Grid>
         </Grid>
       </Stack>
+
+      <Dialog open={Boolean(cvViewer)} onClose={closeCvViewer} fullWidth maxWidth="lg">
+        <DialogTitle>{cvViewer?.title || "Official CV"}</DialogTitle>
+        <DialogContent sx={{ height: { xs: "60vh", md: "75vh" }, p: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          {cvViewer?.loading ? (
+            <CircularProgress />
+          ) : cvViewer?.blobUrl ? (
+            <Box component="iframe" src={cvViewer.blobUrl} title="Employee CV" sx={{ width: "100%", height: "100%", border: 0 }} />
+          ) : (
+            <Typography color="text.secondary">No preview available.</Typography>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={closeCvViewer}>Close</Button>
+        </DialogActions>
+      </Dialog>
 
       <Dialog open={Boolean(cvDialog)} onClose={() => setCvDialog(null)} fullWidth maxWidth="sm">
         <DialogTitle>

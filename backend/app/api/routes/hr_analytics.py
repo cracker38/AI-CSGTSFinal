@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import os
+import uuid
 from datetime import date, timedelta
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import FileResponse
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.api.deps import require_roles
 from app.db.session import get_db
+from app.models.cv_document import CvDocument
 from app.models.employee_profile import EmployeeProfile
 from app.models.hr_action import HrAction
 from app.models.skill import Skill
@@ -19,6 +23,15 @@ from app.services.required_skill_profile import required_skill_profile_with_weig
 from app.services.skill_normalization import normalize_skill_level_map
 
 router = APIRouter()
+
+
+def _latest_cv_document(db: Session, user_id: uuid.UUID) -> CvDocument | None:
+    return (
+        db.query(CvDocument)
+        .filter(CvDocument.user_id == user_id)
+        .order_by(CvDocument.created_at.desc())
+        .first()
+    )
 
 
 def _severity_from_avg_gap(avg_gap: float) -> str:
@@ -238,38 +251,77 @@ def hr_skill_gaps_by_department(
     return {"rows": rows}
 
 
+@router.get("/hr/employees/{user_id}/cv")
+def hr_download_employee_cv(
+    user_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_roles(UserRole.hr_admin)),
+) -> FileResponse:
+    """Serve the employee's latest uploaded résumé PDF (registration or re-upload)."""
+    user = (
+        db.query(User)
+        .filter(User.id == user_id, User.role == UserRole.employee)
+        .one_or_none()
+    )
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
+    doc = _latest_cv_document(db, user_id)
+    if not doc or not os.path.isfile(doc.stored_path):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No CV on file for this employee")
+    return FileResponse(
+        doc.stored_path,
+        filename=doc.original_filename or "cv.pdf",
+        media_type="application/pdf",
+    )
+
+
+def _cv_validation_status(ai_profile: dict) -> str:
+    decision = (ai_profile.get("cv_validation_decision") or "").strip().lower()
+    if decision == "rejected":
+        return "Rejected"
+    if decision == "approved" or bool(ai_profile.get("primary_skill_validated")):
+        return "Validated"
+    return "Needs Validation"
+
+
 @router.get("/hr/cv-validation")
 def hr_cv_validation(
     db: Session = Depends(get_db),
     _: User = Depends(require_roles(UserRole.hr_admin)),
 ) -> dict:
-    # Identify employees whose primary skill is not validated by CV extraction.
+    """Full workforce CV registry: every active employee, not only pending validations."""
     rows = (
         db.query(User, EmployeeProfile)
-        .join(EmployeeProfile, EmployeeProfile.user_id == User.id)
+        .outerjoin(EmployeeProfile, EmployeeProfile.user_id == User.id)
         .filter(User.status == AccountStatus.active, User.role == UserRole.employee)
         .order_by(User.created_at.desc())
         .all()
     )
     out: list[dict] = []
+    pending_count = 0
     for user, profile in rows:
-        ai_profile = profile.ai_profile or {}
-        if ai_profile.get("cv_validation_decision") == "rejected":
-            continue
-        validated = bool(ai_profile.get("primary_skill_validated"))
-        cv_skills = (profile.cv_extract or {}).get("skills") or []
-        if not validated:
-            out.append(
-                {
-                    "user_id": str(user.id),
-                    "employee": user.full_name,
-                    "email": user.email,
-                    "declared_primary_skill": user.primary_skill,
-                    "cv_skills": cv_skills[:25],
-                    "status": "Needs Validation",
-                }
-            )
-    return {"rows": out[:200]}
+        ai_profile = (profile.ai_profile or {}) if profile else {}
+        status = _cv_validation_status(ai_profile)
+        if status == "Needs Validation":
+            pending_count += 1
+        cv_skills = ((profile.cv_extract or {}) if profile else {}).get("skills") or []
+        doc = _latest_cv_document(db, user.id)
+        has_file = bool(doc and os.path.isfile(doc.stored_path))
+        out.append(
+            {
+                "user_id": str(user.id),
+                "employee": user.full_name,
+                "email": user.email,
+                "declared_primary_skill": user.primary_skill,
+                "cv_skills": cv_skills[:25],
+                "status": status,
+                "cv_document_id": str(doc.id) if doc else None,
+                "original_filename": doc.original_filename if doc else None,
+                "cv_uploaded_at": doc.created_at.isoformat() if doc and doc.created_at else None,
+                "has_cv_file": has_file,
+            }
+        )
+    return {"rows": out[:200], "pending_count": int(pending_count)}
 
 
 @router.get("/hr/training-planning")
