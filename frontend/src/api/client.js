@@ -24,6 +24,12 @@ api.interceptors.request.use((config) => {
   if (auth?.access_token && !isAuthLogin) {
     config.headers.Authorization = `Bearer ${auth.access_token}`;
   }
+  config.headers["Cache-Control"] = "no-cache";
+  config.headers.Pragma = "no-cache";
+  const method = (config.method || "get").toLowerCase();
+  if (method === "get") {
+    config.params = { ...(config.params || {}), _t: Date.now() };
+  }
   return config;
 });
 

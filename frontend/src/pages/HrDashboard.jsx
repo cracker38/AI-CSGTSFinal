@@ -5,6 +5,7 @@ import {
   Button,
   Card,
   CardContent,
+  Chip,
   CircularProgress,
   Dialog,
   DialogActions,
@@ -14,6 +15,7 @@ import {
   FormControl,
   Grid,
   InputLabel,
+  LinearProgress,
   MenuItem,
   Select,
   Snackbar,
@@ -67,7 +69,9 @@ export default function HrDashboard() {
     if (s && HR_SECTION_KEYS.has(s)) return s;
     return "home";
   }, [searchParams]);
-  const [loading, setLoading] = useState(true);
+  const [initialLoading, setInitialLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [lastFetchedAt, setLastFetchedAt] = useState(null);
   const [pending, setPending] = useState([]);
   const [records, setRecords] = useState([]);
   const [managers, setManagers] = useState([]);
@@ -80,7 +84,12 @@ export default function HrDashboard() {
   const [deptGaps, setDeptGaps] = useState([]);
   const [cvValidation, setCvValidation] = useState([]);
   const [cvPendingCount, setCvPendingCount] = useState(0);
-  const [trainingPlan, setTrainingPlan] = useState({ budget: { total: 0, used: 0, remaining: 0 }, programs: [], roi_estimate: 0 });
+  const [trainingPlan, setTrainingPlan] = useState({
+    budget: { committed_spend: 0, recommended_investment: 0, uncommitted_recommendation: 0 },
+    programs: [],
+    training_completion_rate_pct: 0,
+    assignment_stats: { total: 0, active: 0, completed: 0 }
+  });
   const [complianceData, setComplianceData] = useState({ rows: [], alerts: { expiring_soon: 0, missing: 0 } });
   const [recruitmentData, setRecruitmentData] = useState({ missing_skills: [], hiring_suggestions: [] });
   const [pipelineData, setPipelineData] = useState({ rows: [] });
@@ -117,8 +126,12 @@ export default function HrDashboard() {
     [activeSection]
   );
 
-  async function load() {
-    setLoading(true);
+  async function load({ silent = false } = {}) {
+    if (initialLoading) {
+      setInitialLoading(true);
+    } else if (!silent) {
+      setRefreshing(true);
+    }
     setError("");
     try {
       const pRes = await api.get("/admin/users/pending");
@@ -152,7 +165,23 @@ export default function HrDashboard() {
       setCvValidation(cvRes.data?.rows || []);
       setCvPendingCount(Number(cvRes.data?.pending_count) || 0);
       const trRes = await api.get("/analytics/hr/training-planning");
-      setTrainingPlan(trRes.data || { budget: { total: 0, used: 0, remaining: 0 }, programs: [], roi_estimate: 0 });
+      const trData = trRes.data || {};
+      if (trData.budget?.total != null && trData.budget?.committed_spend == null) {
+        setError(
+          "Training API returned an old response shape. Restart the backend (uvicorn) and hard-refresh the browser (Ctrl+Shift+R)."
+        );
+      }
+      setTrainingPlan({
+        budget: trData.budget || {
+          committed_spend: 0,
+          recommended_investment: 0,
+          uncommitted_recommendation: 0
+        },
+        programs: trData.programs || [],
+        training_completion_rate_pct: trData.training_completion_rate_pct ?? 0,
+        assignment_stats: trData.assignment_stats || { total: 0, active: 0, completed: 0 },
+        engine: trData.engine || null
+      });
       const trainOpenRes = await api.get("/analytics/hr/training-assignments");
       setHrOpenTrainings(trainOpenRes.data || []);
       const cRes = await api.get("/analytics/hr/compliance");
@@ -173,16 +202,18 @@ export default function HrDashboard() {
       setMasterCatalogAdmin(catalogAdminRes.data || { departments: [], job_titles: [], primary_skills: [] });
       const requestsRes = await api.get("/master-data/requests");
       setCatalogRequests(requestsRes.data || []);
+      setLastFetchedAt(new Date());
     } catch (err) {
       setError(getApiErrorMessage(err, "Failed to load HR view"));
     } finally {
-      setLoading(false);
+      setInitialLoading(false);
+      setRefreshing(false);
     }
   }
 
   useEffect(() => {
     load();
-  }, []);
+  }, [activeSection]);
 
   // Normalize missing or invalid ?section= so the URL always matches a known tab (replace only).
   useEffect(() => {
@@ -328,7 +359,7 @@ export default function HrDashboard() {
         user_id: userId,
         program_name: programName,
         target_skill: targetSkill,
-        estimated_cost: trainingDialog.cost ?? null,
+        estimated_cost: trainingDialog.cost != null ? Number(trainingDialog.cost) : null,
         note: trainingNote.trim() || null
       });
       const newId = res.data?.id;
@@ -516,19 +547,23 @@ export default function HrDashboard() {
     [gapSeverity]
   );
 
-  const trainingBudget = trainingPlan?.budget || { total: 0, used: 0, remaining: 0 };
+  const trainingBudget = trainingPlan?.budget || {
+    committed_spend: 0,
+    recommended_investment: 0,
+    uncommitted_recommendation: 0
+  };
 
   const overviewMetrics = useMemo(() => {
     const employees = records.filter((r) => r.role === "employee");
     const departments = new Set(employees.map((r) => r.department)).size;
-    const activeProjects = 0; // Project module not implemented yet in this build.
+    const activeProjects = hrOverview?.active_projects != null ? Number(hrOverview.active_projects) : 0;
     const gapsCount = topGaps.length;
     const gapTotal = topGaps.reduce((acc, g) => acc + (Number(g.weighted_impact) || Number(g.total_gap) || 0), 0);
     const skillHealthScore = Math.max(0, Math.min(100, Math.round(100 - gapTotal * 1.5)));
     const trainingInProgress =
       hrOverview?.training_in_progress != null
         ? Number(hrOverview.training_in_progress)
-        : Math.max(0, Math.round((trainingBudget.used || 0) / 180));
+        : Number(trainingPlan?.assignment_stats?.active || hrOpenTrainings.length || 0);
     const certificationsExpiringSoon = complianceData?.alerts?.expiring_soon || 0;
     return {
       totalEmployees: employees.length,
@@ -539,7 +574,7 @@ export default function HrDashboard() {
       trainingInProgress,
       certificationsExpiringSoon
     };
-  }, [records, topGaps, trainingBudget, complianceData, hrOverview]);
+  }, [records, topGaps, trainingPlan, complianceData, hrOverview, hrOpenTrainings.length]);
 
   const recruitmentInsights = useMemo(() => {
     const employeeCount = (kpis?.users_by_role?.employee ?? 0) || records.filter((r) => r.role === "employee").length;
@@ -569,7 +604,17 @@ export default function HrDashboard() {
   return (
     <AppShell title="HR Dashboard">
       <Stack spacing={2}>
+        {refreshing ? <LinearProgress /> : null}
         {error ? <Alert severity="error">{error}</Alert> : null}
+        {lastFetchedAt ? (
+          <Alert severity="info" sx={{ py: 0.5 }}>
+            Live data from server — last refreshed {lastFetchedAt.toLocaleTimeString()}
+            {trainingPlan?.engine ? ` · engine ${trainingPlan.engine}` : ""}.
+            {activeSection === "training" && trainingPlan?.budget?.total != null
+              ? " You may be viewing a cached old page — use Ctrl+Shift+R."
+              : ""}
+          </Alert>
+        ) : null}
 
         <Card
           variant="outlined"
@@ -595,8 +640,8 @@ export default function HrDashboard() {
                 </Typography>
               </Box>
               <Stack direction={{ xs: "column", sm: "row" }} spacing={1} width={{ xs: "100%", md: "auto" }}>
-                <Button variant="outlined" onClick={load} fullWidth={isMobile}>
-                  Refresh data
+                <Button variant="outlined" onClick={() => load()} disabled={refreshing} fullWidth={isMobile}>
+                  {refreshing ? "Refreshing…" : "Refresh data"}
                 </Button>
                 <Button
                   variant="contained"
@@ -673,7 +718,7 @@ export default function HrDashboard() {
               </Button>
             </Stack>
             <div ref={exportRef}>
-            {loading ? (
+            {initialLoading ? (
               <SectionPanel>
                 <Stack direction="row" spacing={2} alignItems="center">
                   <CircularProgress size={22} />
@@ -682,7 +727,7 @@ export default function HrDashboard() {
               </SectionPanel>
             ) : null}
 
-            {!loading && activeSection === "home" ? (
+            {!initialLoading && activeSection === "home" ? (
               <Card variant="outlined">
                 <CardContent>
                   <Typography variant="h6" fontWeight={800}>
@@ -848,7 +893,7 @@ export default function HrDashboard() {
               </Card>
             ) : null}
 
-            {!loading && activeSection === "records" ? (
+            {!initialLoading && activeSection === "records" ? (
               <Card variant="outlined">
                 <CardContent>
                   <Typography variant="h6" fontWeight={800}>
@@ -968,7 +1013,7 @@ export default function HrDashboard() {
               </Card>
             ) : null}
 
-            {!loading && activeSection === "masterdata" ? (
+            {!initialLoading && activeSection === "masterdata" ? (
               <Card variant="outlined">
                 <CardContent>
                   <Typography variant="h6" fontWeight={800}>
@@ -1132,67 +1177,124 @@ export default function HrDashboard() {
               </Card>
             ) : null}
 
-            {!loading && activeSection === "training" ? (
+            {!initialLoading && activeSection === "training" ? (
               <Card variant="outlined">
                 <CardContent>
                   <Typography variant="h6" fontWeight={800}>
-                    Training planning tools & budget tracking
+                    Training planning & budget tracking
                   </Typography>
+                  <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                    Committed spend is summed from real HR training assignments in the database. Recommended investment is
+                    calculated from organization skill gaps and official vendor course durations — not fixed demo budgets.
+                  </Typography>
+                  {refreshing ? <LinearProgress sx={{ mt: 1.5 }} /> : null}
+                  <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mt: 1 }}>
+                    {lastFetchedAt ? (
+                      <Chip size="small" variant="outlined" label={`Updated ${lastFetchedAt.toLocaleTimeString()}`} />
+                    ) : null}
+                    {trainingPlan?.engine ? (
+                      <Chip size="small" color="success" variant="outlined" label={trainingPlan.engine} />
+                    ) : null}
+                  </Stack>
                   <Divider sx={{ my: 2 }} />
                   <Grid container spacing={2} sx={{ mb: 1 }}>
                     <Grid item xs={12} md={4}>
-                      <Alert severity="info">Total budget: ${Number(trainingBudget.total || 0).toLocaleString()}</Alert>
+                      <Alert severity="success">
+                        Committed spend (DB): ${Number(trainingBudget.committed_spend || 0).toLocaleString()}
+                      </Alert>
                     </Grid>
                     <Grid item xs={12} md={4}>
-                      <Alert severity="success">Used: ${Number(trainingBudget.used || 0).toLocaleString()}</Alert>
+                      <Alert severity="info">
+                        Recommended plan: ${Number(trainingBudget.recommended_investment || 0).toLocaleString()}
+                      </Alert>
                     </Grid>
                     <Grid item xs={12} md={4}>
-                      <Alert severity="warning">Remaining: ${Number(trainingBudget.remaining || 0).toLocaleString()}</Alert>
+                      <Alert severity="warning">
+                        Not yet committed: ${Number(trainingBudget.uncommitted_recommendation || 0).toLocaleString()}
+                      </Alert>
                     </Grid>
                   </Grid>
-                  <Alert severity="info" sx={{ mb: 2 }}>
-                    ROI estimate: {(Number(trainingPlan.roi_estimate || 0) * 100).toFixed(1)}%
-                  </Alert>
-                  <TableContainer>
-                    <Table size="small">
-                      <TableHead>
-                        <TableRow>
-                          <TableCell>Course name</TableCell>
-                          <TableCell>Skill targeted</TableCell>
-                          <TableCell align="right">Cost</TableCell>
-                          <TableCell align="right">Employees assigned</TableCell>
-                          <TableCell align="right">HR action</TableCell>
-                        </TableRow>
-                      </TableHead>
-                      <TableBody>
-                        {(trainingPlan.programs || []).map((p) => (
-                          <TableRow key={p.program_name}>
-                            <TableCell>{p.program_name}</TableCell>
-                            <TableCell>{p.target_skill}</TableCell>
-                            <TableCell align="right">${Number(p.cost || 0).toLocaleString()}</TableCell>
-                            <TableCell align="right">{p.employees_assigned}</TableCell>
-                            <TableCell align="right">
-                              <Button
-                                size="small"
-                                variant="outlined"
-                                onClick={() => {
-                                  setTrainingUserId(activeEmployees[0]?.id || "");
-                                  setTrainingNote("");
-                                  setTrainingDialog({
-                                    program_name: p.program_name,
-                                    target_skill: p.target_skill,
-                                    cost: p.cost
-                                  });
-                                }}
-                              >
-                                Assign employee
-                              </Button>
-                            </TableCell>
+                  <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 2 }}>
+                    <Chip
+                      size="small"
+                      label={`Training completion rate: ${Number(trainingPlan.training_completion_rate_pct || 0).toFixed(1)}%`}
+                    />
+                    <Chip size="small" label={`Active assignments: ${trainingPlan.assignment_stats?.active ?? 0}`} />
+                    <Chip size="small" label={`Completed: ${trainingPlan.assignment_stats?.completed ?? 0}`} />
+                  </Stack>
+                  <Typography variant="subtitle1" fontWeight={800} sx={{ mb: 1 }}>
+                    Recommended programs (from org skill gaps)
+                  </Typography>
+                  {(trainingPlan.programs || []).length === 0 ? (
+                    <Alert severity="success" sx={{ mb: 2 }}>
+                      No organization skill gaps — workforce meets required profiles.
+                    </Alert>
+                  ) : (
+                    <TableContainer sx={{ mb: 2 }}>
+                      <Table size="small">
+                        <TableHead>
+                          <TableRow>
+                            <TableCell>Official course</TableCell>
+                            <TableCell>Provider</TableCell>
+                            <TableCell>Skill</TableCell>
+                            <TableCell align="right">Employees needing</TableCell>
+                            <TableCell align="right">Org gap</TableCell>
+                            <TableCell align="right">Suggested investment</TableCell>
+                            <TableCell align="right">Committed (DB)</TableCell>
+                            <TableCell align="right">Assign</TableCell>
                           </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  </TableContainer>
+                        </TableHead>
+                        <TableBody>
+                          {(trainingPlan.programs || []).map((p) => (
+                            <TableRow key={`${p.target_skill}-${p.program_name}`}>
+                              <TableCell sx={{ maxWidth: 200 }}>
+                                {p.official_url ? (
+                                  <Typography
+                                    component="a"
+                                    href={p.official_url}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    variant="body2"
+                                    fontWeight={600}
+                                  >
+                                    {p.program_name}
+                                  </Typography>
+                                ) : (
+                                  p.program_name
+                                )}
+                              </TableCell>
+                              <TableCell>{p.provider || "—"}</TableCell>
+                              <TableCell>{p.target_skill}</TableCell>
+                              <TableCell align="right">{p.employees_needing}</TableCell>
+                              <TableCell align="right">{p.org_gap_units}</TableCell>
+                              <TableCell align="right">${Number(p.suggested_investment || 0).toLocaleString()}</TableCell>
+                              <TableCell align="right">
+                                ${Number(p.committed_spend || 0).toLocaleString()}
+                                {p.active_assignments > 0 ? ` (${p.active_assignments})` : ""}
+                              </TableCell>
+                              <TableCell align="right">
+                                <Button
+                                  size="small"
+                                  variant="outlined"
+                                  onClick={() => {
+                                    setTrainingUserId(activeEmployees[0]?.id || "");
+                                    setTrainingNote("");
+                                    setTrainingDialog({
+                                      program_name: p.program_name,
+                                      target_skill: p.target_skill,
+                                      cost: p.suggested_investment
+                                    });
+                                  }}
+                                >
+                                  Assign employee
+                                </Button>
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </TableContainer>
+                  )}
                   <Divider sx={{ my: 2 }} />
                   <Stack direction={{ xs: "column", sm: "row" }} spacing={1} alignItems={{ xs: "stretch", sm: "center" }} justifyContent="space-between" sx={{ mb: 1 }}>
                     <Typography variant="subtitle1" fontWeight={800}>
@@ -1325,7 +1427,7 @@ export default function HrDashboard() {
               </Card>
             ) : null}
 
-            {!loading && activeSection === "gaps" ? (
+            {!initialLoading && activeSection === "gaps" ? (
               <Card variant="outlined">
                 <CardContent>
                   <Typography variant="h6" fontWeight={800}>
@@ -1418,7 +1520,7 @@ export default function HrDashboard() {
               </Card>
             ) : null}
 
-            {!loading && activeSection === "compliance" ? (
+            {!initialLoading && activeSection === "compliance" ? (
               <Card variant="outlined">
                 <CardContent>
                   <Typography variant="h6" fontWeight={800}>
@@ -1478,7 +1580,7 @@ export default function HrDashboard() {
               </Card>
             ) : null}
 
-            {!loading && activeSection === "recruitment" ? (
+            {!initialLoading && activeSection === "recruitment" ? (
               <Card variant="outlined">
                 <CardContent>
                   <Typography variant="h6" fontWeight={800}>
@@ -1534,7 +1636,7 @@ export default function HrDashboard() {
               </Card>
             ) : null}
 
-            {!loading && activeSection === "pipeline" ? (
+            {!initialLoading && activeSection === "pipeline" ? (
               <Card variant="outlined">
                 <CardContent>
                   <Typography variant="h6" fontWeight={800}>
@@ -1598,7 +1700,7 @@ export default function HrDashboard() {
               </Card>
             ) : null}
 
-            {!loading && activeSection === "cv" ? (
+            {!initialLoading && activeSection === "cv" ? (
               <Card variant="outlined">
                 <CardContent>
                   <Typography variant="h6" fontWeight={800}>
@@ -1627,7 +1729,7 @@ export default function HrDashboard() {
                             <TableCell>Employee</TableCell>
                             <TableCell>Email</TableCell>
                             <TableCell>Declared primary skill</TableCell>
-                            <TableCell>CV skills (sample)</TableCell>
+                            <TableCell>CV skills (from résumé)</TableCell>
                             <TableCell>Status</TableCell>
                             <TableCell>Uploaded</TableCell>
                             <TableCell align="right">Official CV</TableCell>
@@ -1704,7 +1806,7 @@ export default function HrDashboard() {
               </Card>
             ) : null}
 
-            {!loading && activeSection === "performance" ? (
+            {!initialLoading && activeSection === "performance" ? (
               <Card variant="outlined">
                 <CardContent>
                   <Typography variant="h6" fontWeight={800}>

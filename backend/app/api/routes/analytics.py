@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.ai.gap import compute_skill_gaps, gap_payload_from_items, recommend_actions
+from app.ai.gap import compute_skill_gaps
 from app.api.deps import get_current_user
 from app.db.session import get_db
 from app.models.employee_profile import EmployeeProfile
@@ -33,7 +33,10 @@ from app.services.training_assignments import (
 )
 from app.services.training_materials import get_material_download_path
 from app.services.cv import save_and_process_cv
+from app.services.employee_gap_visualization import build_employee_skill_gap_visualization
 from app.services.employee_intel import build_employee_dashboard_intel, build_story_bullets, sync_ai_cv_story
+from app.services.career_paths import build_employee_career_paths
+from app.services.training_recommendations import build_employee_training_recommendations
 from app.services.required_skill_profile import required_skill_profile_with_weights
 from app.services.skill_normalization import normalize_skill_level_map, normalize_skill_name
 
@@ -85,35 +88,8 @@ def my_skill_gaps(
     # STRICT: employee dashboard analytics are employee-only.
     if user.role != UserRole.employee:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
-    rows = (
-        db.query(Skill.name, UserSkill.level)
-        .join(UserSkill, Skill.id == UserSkill.skill_id)
-        .filter(UserSkill.user_id == user.id)
-        .all()
-    )
-    current = normalize_skill_level_map({name: int(level) for (name, level) in rows})
-    required, importance_weights = required_skill_profile_with_weights(user)
-
-    gaps = compute_skill_gaps(
-        current=current,
-        required=required,
-        importance_weights=importance_weights,
-        confidence_base=0.65,
-    )
-    recs = recommend_actions(gaps)
-    return {
-        "required_profile": required,
-        "current_profile": current,
-        "importance_weights": importance_weights,
-        "gaps": gap_payload_from_items(gaps),
-        "recommendations": recs,
-        "explainability": {
-            "rule": "Required skills use a unified profile (primary skill + baseline + job-title hints). Skill names are normalized so CV/catalog variants map to one canonical gap.",
-            "weighted_gaps": "weighted_gap = gap × importance_weight; weighted_gap_impact = max(0,gap)×weight for prioritization.",
-            "confidence_notes": "Confidence is reduced when current level is missing (inventory gap). Evidence source is used downstream in training recommendations.",
-        },
-        "engine": {"version": "2.0", "weighted_gap_engine": True},
-    }
+    profile = _employee_profile_or_ensure(db, user)
+    return build_employee_skill_gap_visualization(db, user, profile)
 
 
 @router.get("/employee/overview")
@@ -707,62 +683,11 @@ def submit_self_assessment(
 def training_recommendations(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
-) -> list[dict]:
+) -> dict:
     if user.role != UserRole.employee:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
     profile = _employee_profile_or_ensure(db, user)
-    cv_extract = profile.cv_extract or {}
-    cv_skills = {normalize_skill_name(str(s)) for s in (cv_extract.get("skills") or []) if str(s).strip()}
-    cert_text = " ".join([str(c) for c in (cv_extract.get("certifications") or [])]).lower()
-    source_weight = {"manager": 1.0, "cv": 0.9, "ai": 0.75, "self": 0.65}
-    skill_source_map = {}
-    rows = (
-        db.query(Skill.name, UserSkill.source)
-        .join(UserSkill, Skill.id == UserSkill.skill_id)
-        .filter(UserSkill.user_id == user.id)
-        .all()
-    )
-    for name, source in rows:
-        skill_source_map[normalize_skill_name(str(name))] = str(source.value if hasattr(source, "value") else source)
-    gaps_payload = my_skill_gaps(db=db, user=user)
-    recs = []
-    for g in gaps_payload.get("gaps", []):
-        if g.get("gap", 0) <= 0:
-            continue
-        skill = normalize_skill_name(str(g.get("skill") or ""))
-        gap = float(g.get("gap") or 0)
-        w_imp = float(g.get("weighted_gap_impact") or 0)
-        source = skill_source_map.get(skill, "self")
-        evidence_confidence = source_weight.get(source, 0.65)
-        cert_relevance = 1.0 if skill and skill in cert_text else 0.0
-        cv_relevance = 1.0 if skill in cv_skills else 0.0
-        projected_gap_reduction_pct = round(min(95.0, 35 + (gap * 18) + (cert_relevance * 12) + (cv_relevance * 8)), 1)
-        overall = (0.55 * evidence_confidence) + (0.25 * cv_relevance) + (0.2 * cert_relevance)
-        match_pct = round(min(99.0, 60 + gap * 7 + w_imp * 2.5 + overall * 18), 1)
-        rationale = []
-        rationale.append(f"Gap {gap:.1f} in {skill} (weighted impact {w_imp:.2f}).")
-        rationale.append(f"Evidence source: {source}.")
-        if cv_relevance:
-            rationale.append("Skill found in CV.")
-        if cert_relevance:
-            rationale.append("Relevant certification detected.")
-        recs.append(
-            {
-                "course": f"{skill.title()} Intensive",
-                "skill": skill,
-                "match_pct": match_pct,
-                "mode": "Online",
-                "certification": True,
-                "duration_weeks": int(max(2, round(gap * 2))),
-                "evidence_confidence_pct": round(evidence_confidence * 100, 1),
-                "cert_relevance_pct": round(cert_relevance * 100, 1),
-                "cv_relevance_pct": round(cv_relevance * 100, 1),
-                "projected_gap_reduction_pct": projected_gap_reduction_pct,
-                "rationale": " ".join(rationale),
-            }
-        )
-    recs.sort(key=lambda x: x["match_pct"], reverse=True)
-    return recs[:20]
+    return build_employee_training_recommendations(db, user, profile)
 
 
 @router.get("/employee/training-progress")
@@ -955,31 +880,8 @@ def career_paths(
 ) -> list[dict]:
     if user.role != UserRole.employee:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
-    current = {
-        n.lower(): int(l)
-        for (n, l) in db.query(Skill.name, UserSkill.level)
-        .join(UserSkill, Skill.id == UserSkill.skill_id)
-        .filter(UserSkill.user_id == user.id)
-        .all()
-    }
-    roles = [
-        ("Backend Developer", {"python": 4, "sql": 3, "docker": 2}),
-        ("AI Engineer", {"python": 4, "machine learning": 4, "sql": 3}),
-        ("DevOps Engineer", {"docker": 4, "git": 3, "communication": 2}),
-    ]
-    out = []
-    for role, required in roles:
-        matched = sum(min(current.get(k, 0), v) for k, v in required.items())
-        total = sum(required.values())
-        out.append(
-            {
-                "role": role,
-                "career_match_pct": round((matched / max(1, total)) * 100, 1),
-                "required_skills": required,
-            }
-        )
-    out.sort(key=lambda x: x["career_match_pct"], reverse=True)
-    return out
+    profile = _employee_profile_or_ensure(db, user)
+    return build_employee_career_paths(db, user, profile)
 
 
 @router.get("/employee/goals")

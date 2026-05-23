@@ -1,14 +1,16 @@
-import React from "react";
+import React, { useEffect, useState } from "react";
 import {
   AppBar,
   Box,
   Button,
+  CircularProgress,
   Container,
   Drawer,
   IconButton,
   List,
   ListItemButton,
   ListItemText,
+  Snackbar,
   Toolbar,
   Typography,
   useMediaQuery,
@@ -21,6 +23,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { clearAuth, getAuth } from "../auth/authStore";
 import { canAccessRoleRoute } from "../auth/roleRouting";
 import { useThemeMode } from "../theme/ThemeModeContext";
+import { consumeFreshReloadNotice, reloadFreshPage } from "../utils/reloadFresh";
 
 const drawerWidth = 260;
 
@@ -124,7 +127,16 @@ export default function AppShell({ title, children }) {
   const role = auth?.role;
   const items = role ? navItemsForRole(role) : [];
   const [mobileOpen, setMobileOpen] = React.useState(false);
+  const [reloading, setReloading] = useState(false);
+  const [freshNotice, setFreshNotice] = useState(null);
   const { mode, toggleMode } = useThemeMode();
+
+  useEffect(() => {
+    const at = consumeFreshReloadNotice();
+    if (at) {
+      setFreshNotice(`Page reloaded with fresh data at ${at.toLocaleTimeString()}.`);
+    }
+  }, []);
 
   /** Drawer sits below AppBar; scroll nav so Chrome/desktop shows every link (overflow was clipped before). */
   const drawerPaperFlex = {
@@ -232,6 +244,23 @@ export default function AppShell({ title, children }) {
               </Typography>
               <Button
                 color="inherit"
+                size="small"
+                disabled={reloading}
+                startIcon={reloading ? <CircularProgress size={14} color="inherit" /> : null}
+                onClick={async () => {
+                  setReloading(true);
+                  try {
+                    await reloadFreshPage();
+                  } catch {
+                    setReloading(false);
+                    setFreshNotice("Reload failed — try Ctrl+Shift+R in the browser.");
+                  }
+                }}
+              >
+                Reload fresh data
+              </Button>
+              <Button
+                color="inherit"
                 onClick={() => {
                   clearAuth();
                   navigate("/login");
@@ -301,6 +330,13 @@ export default function AppShell({ title, children }) {
           <Container sx={{ py: 4 }}>{children}</Container>
         </Box>
       </Box>
+      <Snackbar
+        open={Boolean(freshNotice)}
+        autoHideDuration={8000}
+        onClose={() => setFreshNotice(null)}
+        message={freshNotice || ""}
+        anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
+      />
     </Box>
   );
 }

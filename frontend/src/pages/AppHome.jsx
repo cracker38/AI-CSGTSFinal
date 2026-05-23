@@ -9,6 +9,11 @@ import {
   Divider,
   Grid,
   Stack,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableRow,
   Typography
 } from "@mui/material";
 import AppShell from "../components/AppShell";
@@ -139,23 +144,34 @@ export default function AppHome() {
                 </Typography>
                 {!gaps ? (
                   <Alert severity="info">Loading analytics…</Alert>
+                ) : (gaps.priority_gaps || []).length === 0 ? (
+                  <Alert severity="success">No skill gaps vs your HR role profile.</Alert>
                 ) : (
                   <>
                     <Typography variant="body2" color="text.secondary">
-                      {gaps.explainability.rule}
+                      {gaps.explainability?.rule}
                     </Typography>
-                    <Box sx={{ overflowX: "auto" }}>
-                      <pre style={{ margin: 0, whiteSpace: "pre-wrap" }}>
-                        {JSON.stringify(
-                          {
-                            top_gaps: gaps.gaps.slice(0, 8),
-                            recommendations: gaps.recommendations
-                          },
-                          null,
-                          2
-                        )}
-                      </pre>
-                    </Box>
+                    <Table size="small" sx={{ mt: 1 }}>
+                      <TableHead>
+                        <TableRow>
+                          <TableCell>Skill</TableCell>
+                          <TableCell align="right">Gap</TableCell>
+                          <TableCell>Severity</TableCell>
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {(gaps.priority_gaps || []).slice(0, 6).map((g) => (
+                          <TableRow key={g.skill}>
+                            <TableCell>{g.skill}</TableCell>
+                            <TableCell align="right">{g.gap}</TableCell>
+                            <TableCell>{g.severity}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                    <Button size="small" sx={{ mt: 1 }} href="/app/employee?section=gaps">
+                      Open full gap visualization
+                    </Button>
                   </>
                 )}
               </Stack>

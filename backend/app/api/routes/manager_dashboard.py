@@ -18,46 +18,15 @@ from app.models.manager_project import (
     ProjectSkillRequirement,
     ProjectStatus,
 )
-from app.models.employee_profile import EmployeeProfile
-from app.models.hr_action import HrAction
 from app.models.master_data import JobTitleCatalog
 from app.models.skill import Skill
 from app.models.user import AccountStatus, User, UserRole
 from app.models.user_skill import UserSkill
 from app.services.skill_normalization import normalize_skill_name
+from app.services.job_matching import match_employees_for_project
+from app.services.workforce_analytics import manager_employee_performance, team_weighted_gap_score
 
 router = APIRouter()
-
-
-def _normalize_title(value: str | None) -> str:
-    return " ".join(str(value or "").strip().lower().split())
-
-
-def _title_tokens(value: str | None) -> set[str]:
-    return {token for token in _normalize_title(value).replace("/", " ").replace("-", " ").split(" ") if token}
-
-
-def _title_match_score(candidate_title: str, required_titles: set[str]) -> float:
-    if not required_titles:
-        return 1.0
-    candidate_norm = _normalize_title(candidate_title)
-    if candidate_norm in required_titles:
-        return 1.0
-    candidate_tokens = _title_tokens(candidate_title)
-    best = 0.0
-    for required in required_titles:
-        required_tokens = _title_tokens(required)
-        if not required_tokens:
-            continue
-        overlap = len(candidate_tokens.intersection(required_tokens))
-        score = overlap / max(1, len(required_tokens))
-        if score > best:
-            best = score
-    return best
-
-
-def _clamp01(value: float) -> float:
-    return max(0.0, min(1.0, value))
 
 
 def _team_query(db: Session, manager_id: uuid.UUID):
@@ -101,10 +70,7 @@ def manager_overview(
         .filter(UserSkill.user_id.in_(team_ids) if team_ids else False)
         .all()
     )
-    if skills:
-        team_gap_score = round(sum(max(0, 3 - int(level)) for _, level in skills) / len(skills), 2)
-    else:
-        team_gap_score = 0.0
+    team_gap_score = team_weighted_gap_score(db, team)
 
     skill_distribution = Counter([sname for sname, _ in skills]).most_common(8)
     workload_distribution = [
@@ -145,7 +111,7 @@ def team_members(
         skills = [{"name": name, "level": level} for name, level in user_skills]
         workload = round(workloads.get(employee.id, 0.0), 1)
         availability_state = "available" if workload < 100 else "overloaded"
-        performance = max(0, min(100, int(95 - workload * 0.35)))
+        perf = manager_employee_performance(db, employee, workload)
         row = {
             "id": str(employee.id),
             "name": employee.full_name,
@@ -153,7 +119,9 @@ def team_members(
             "skills": skills,
             "availability": availability_state,
             "workload_pct": workload,
-            "performance": performance,
+            "performance": perf["performance_score"],
+            "training_completion_pct": perf["training_completion_pct"],
+            "project_progress_pct": perf["task_completion_rate"],
         }
         result.append(row)
 
@@ -431,178 +399,9 @@ def match_employees(
     project = db.query(ManagerProject).filter(ManagerProject.id == project_id, ManagerProject.manager_id == manager.id).one_or_none()
     if not project:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
-    req_rows = (
-        db.query(ProjectSkillRequirement.skill_id, Skill.name, ProjectSkillRequirement.required_level, ProjectSkillRequirement.weight)
-        .join(Skill, Skill.id == ProjectSkillRequirement.skill_id)
-        .filter(ProjectSkillRequirement.project_id == project.id)
-        .all()
-    )
-    required_titles = {
-        row[0]
-        for row in db.query(ProjectJobTitleRequirement.job_title)
-        .filter(ProjectJobTitleRequirement.project_id == project.id)
-        .all()
-    }
-    normalized_required_titles = {_normalize_title(title) for title in required_titles}
-    has_requirements = len(req_rows) > 0
-    total_weight = sum(float(weight) for _, _, _, weight in req_rows) if has_requirements else 1.0
-    required_skill_ids = {skill_id for skill_id, _, _, _ in req_rows} if has_requirements else set()
-    required_skill_names = {_normalize_title(name) for _, name, _, _ in req_rows} if has_requirements else set()
     workloads = _workload_by_employee(db, manager.id)
     team = _team_query(db, manager.id).all()
-    matches: list[dict] = []
-    for employee in team:
-        title_score = _title_match_score(employee.job_title, normalized_required_titles)
-        title_match = title_score >= 0.99
-        department_match = _normalize_title(employee.department) == _normalize_title(manager.department)
-        skill_rows = (
-            db.query(UserSkill.skill_id, UserSkill.level, UserSkill.source)
-            .filter(UserSkill.user_id == employee.id)
-            .all()
-        )
-        current = {sid: int(level) for sid, level, _ in skill_rows}
-        source_weight = {"manager": 1.0, "cv": 0.9, "ai": 0.75, "self": 0.65}
-        evidence_conf = {
-            sid: source_weight.get(str(source.value if hasattr(source, "value") else source), 0.7)
-            for sid, _, source in skill_rows
-        }
-        weighted = 0.0
-        total_gap = 0.0
-        critical_skill_missing = False
-        for skill_id, _, required_level, weight in req_rows:
-            employee_level = current.get(skill_id, 0)
-            ratio = employee_level / max(1, required_level)
-            confidence = evidence_conf.get(skill_id, 0.5 if employee_level > 0 else 0.0)
-            weighted += min(1.15, max(0.0, ratio)) * float(weight) * confidence
-            total_gap += max(0, required_level - employee_level)
-            if employee_level <= 0 and (required_level >= 4 or float(weight) >= 1.5):
-                critical_skill_missing = True
-        skill_score = (weighted / max(total_weight, 0.1)) * 100 if has_requirements else 55.0
-        avg_evidence_conf = sum(evidence_conf.values()) / max(1, len(evidence_conf))
-        workload = workloads.get(employee.id, 0.0)
-        availability_score = _clamp01(1 - (workload / 100.0))
-        assignment_rows = (
-            db.query(ProjectAssignment.project_id, ManagerProject.status)
-            .join(ManagerProject, ManagerProject.id == ProjectAssignment.project_id)
-            .filter(ProjectAssignment.employee_id == employee.id)
-            .all()
-        )
-        total_projects = len(assignment_rows)
-        completed_projects = sum(1 for _, st in assignment_rows if st == ProjectStatus.completed)
-        completion_score = completed_projects / max(1, total_projects)
-        workload_reliability = _clamp01(1 - (workload / 120.0))
-        performance_score = (completion_score * 0.75) + (workload_reliability * 0.25)
-        similar_projects = (
-            db.query(ProjectAssignment.project_id)
-            .join(ProjectSkillRequirement, ProjectSkillRequirement.project_id == ProjectAssignment.project_id)
-            .filter(
-                ProjectAssignment.employee_id == employee.id,
-                ProjectSkillRequirement.skill_id.in_(required_skill_ids) if required_skill_ids else False,
-            )
-            .distinct()
-            .count()
-        )
-        project_similarity_score = similar_projects / max(1, total_projects)
-        profile = db.query(EmployeeProfile).filter(EmployeeProfile.user_id == employee.id).one_or_none()
-        cert_values = []
-        if profile and isinstance(profile.cv_extract, dict):
-            cert_values = [str(x) for x in (profile.cv_extract.get("certifications") or [])]
-        training_rows = (
-            db.query(HrAction.payload)
-            .filter(
-                HrAction.target_user_id == employee.id,
-                HrAction.action_type == "training_assign",
-                HrAction.status.in_(["completed", "in_progress"]),
-            )
-            .all()
-        )
-        cert_text = " ".join(cert_values).lower()
-        cv_skill_set = set()
-        if profile and isinstance(profile.cv_extract, dict):
-            cv_skill_set = {_normalize_title(s) for s in (profile.cv_extract.get("skills") or [])}
-        experience_years = 0
-        if profile and isinstance(profile.cv_extract, dict):
-            experience_years = int(profile.cv_extract.get("experience_years") or 0)
-        training_skills = {
-            _normalize_title((row[0] or {}).get("target_skill"))
-            for row in training_rows
-            if isinstance(row[0], dict)
-        }
-        cert_hits = sum(1 for rs in required_skill_names if rs and (rs in cert_text or rs in training_skills))
-        cert_score = cert_hits / max(1, len(required_skill_names)) if has_requirements else 0.0
-        cv_hits = sum(1 for rs in required_skill_names if rs and rs in cv_skill_set)
-        cv_score = cv_hits / max(1, len(required_skill_names)) if has_requirements else 0.0
-        experience_depth_score = _clamp01(experience_years / 8.0)
-        gap_penalty = _clamp01((total_gap / max(1, len(req_rows))) / 5.0) if has_requirements else 0.0
-        primary_skill_match = (
-            (_normalize_title(employee.primary_skill) in required_skill_names) if has_requirements else True
-        )
-        experience_score = (project_similarity_score * 0.7) + (experience_depth_score * 0.3)
-        score = (
-            (skill_score / 100.0) * 0.4
-            + experience_score * 0.15
-            + availability_score * 0.15
-            + performance_score * 0.1
-            + cert_score * 0.05
-            + cv_score * 0.03
-            + experience_depth_score * 0.02
-            - gap_penalty * 0.1
-        ) * 100.0
-        score = score * (0.85 + (avg_evidence_conf * 0.15))
-        hard_rule_flags: list[str] = []
-        if not department_match:
-            hard_rule_flags.append("department_mismatch")
-        if normalized_required_titles and _normalize_title(employee.job_title) not in normalized_required_titles:
-            hard_rule_flags.append("job_title_mismatch")
-        if has_requirements and not primary_skill_match:
-            hard_rule_flags.append("primary_skill_mismatch")
-        if workload >= 100:
-            hard_rule_flags.append("employee_overloaded")
-        if has_requirements and critical_skill_missing:
-            hard_rule_flags.append("critical_skill_missing")
-        if hard_rule_flags:
-            score = 0.0
-        recommendation = "Ready for assignment"
-        if hard_rule_flags:
-            recommendation = "Blocked by hard rules"
-        elif total_gap > 0:
-            recommendation = "Assignable with mentoring/training support"
-        fit_class = "Reject"
-        if score >= 85:
-            fit_class = "Best Fit"
-        elif score >= 70:
-            fit_class = "Good Fit"
-        elif score >= 50:
-            fit_class = "Risky"
-        matches.append(
-            {
-                "employee_id": str(employee.id),
-                "employee": employee.full_name,
-                "match_pct": round(score, 1),
-                "skill_match_pct": round(skill_score, 1),
-                "title_match_pct": round(title_score * 100, 1),
-                "gap": round(total_gap, 2),
-                "availability": workload < 100,
-                "workload_pct": round(workload, 1),
-                "job_title": employee.job_title,
-                "eligible": len(hard_rule_flags) == 0,
-                "eligibility_reason": ", ".join(hard_rule_flags) if hard_rule_flags else None,
-                "recommendation": recommendation,
-                "fit_class": fit_class,
-                "hard_rule_flags": hard_rule_flags,
-                "experience_score": round(experience_score * 100, 1),
-                "availability_score": round(availability_score * 100, 1),
-                "performance_score": round(performance_score * 100, 1),
-                "evidence_confidence": round(avg_evidence_conf * 100, 1),
-                "cert_score": round(cert_score * 100, 1),
-                "cv_score": round(cv_score * 100, 1),
-                "experience_depth_score": round(experience_depth_score * 100, 1),
-                "gap_penalty": round(gap_penalty * 100, 1),
-                "department_match": department_match,
-                "primary_skill_match": primary_skill_match,
-            }
-        )
-    return sorted(matches, key=lambda x: (x["eligible"], x["match_pct"]), reverse=True)
+    return match_employees_for_project(db, project=project, manager=manager, team=team, workloads=workloads)
 
 
 class AssignmentInput(BaseModel):
@@ -770,19 +569,20 @@ def performance(
 ) -> list[dict]:
     team = _team_query(db, manager.id).all()
     workloads = _workload_by_employee(db, manager.id)
-    now = datetime.now(timezone.utc)
     items = []
     for u in team:
         workload_pct = workloads.get(u.id, 0.0)
-        completion_rate = max(0, min(100, int(96 - workload_pct * 0.4)))
-        perf = max(0, min(100, int(completion_rate * 0.9 + 8)))
+        perf = manager_employee_performance(db, u, workload_pct)
         items.append(
             {
                 "employee_id": str(u.id),
                 "employee": u.full_name,
-                "performance_score": perf,
-                "task_completion_rate": completion_rate,
-                "skill_improvement": round(min(100, 40 + (now.month * 2) - workload_pct * 0.1), 1),
+                "performance_score": perf["performance_score"],
+                "task_completion_rate": perf["task_completion_rate"],
+                "skill_improvement": perf["skill_improvement"],
+                "training_completion_pct": perf["training_completion_pct"],
+                "projects_tracked": perf["projects_tracked"],
+                "engine": "workforce_db_v1",
             }
         )
     return sorted(items, key=lambda x: x["performance_score"], reverse=True)

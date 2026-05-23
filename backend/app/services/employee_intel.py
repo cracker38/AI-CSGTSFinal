@@ -20,6 +20,7 @@ from app.models.manager_project import (
 from app.models.skill import Skill
 from app.models.user import User
 from app.models.user_skill import UserSkill
+from app.services.employee_competency import build_employee_cv_competency, competency_summary_dict, employee_context_document
 from app.services.required_skill_profile import required_skill_levels_for
 from app.services.skill_normalization import normalize_skill_level_map, normalize_skill_name
 
@@ -293,13 +294,10 @@ def build_employee_dashboard_intel(db: Session, user: User, profile: EmployeePro
         gap_tgt, w_imp_tgt = _gap_averages(cur, req_tgt, w_tgt)
         band_tgt, label_tgt = _readiness_band(w_imp_tgt)
 
-    cv_blob = " ".join(
-        [
-            (cv.get("text_preview") or "").strip(),
-            " ".join(str(s) for s in (cv.get("skills") or []) if str(s).strip()),
-        ]
-    ).strip()
-    ml_cos_tgt = cv_role_semantic_similarity(cv_blob if len(cv_blob) >= 24 else None, req_tgt)
+    competency = build_employee_cv_competency(db, user, profile)
+    cv_comp = competency_summary_dict(competency)
+    context_doc = employee_context_document(user, profile, competency.cv_text)
+    ml_cos_tgt = cv_role_semantic_similarity(context_doc if len(context_doc) >= 24 else None, req_tgt)
 
     openness = build_open_opportunities(db, user, target_job_title=target_jt or None)
 
@@ -323,6 +321,7 @@ def build_employee_dashboard_intel(db: Session, user: User, profile: EmployeePro
     return {
         "narrative": {"headline": headline, "subtitle": subtitle, "bullets": bullets_ext},
         "positions": {"hr_job_title": hr_jt or None, "target_job_title": target_jt or None, "targets_match_hr_record": same_target},
+        "cv_competency": cv_comp,
         "cv_signal": {
             "skill_mentions_catalog": len(cv_skills),
             "inventory_overlap_at_working_level": inv_overlap,
@@ -330,14 +329,18 @@ def build_employee_dashboard_intel(db: Session, user: User, profile: EmployeePro
             "education_preview": (cv.get("education") or [])[:5],
             "experience_years_hint": cv.get("experience_years"),
             "text_preview_tail": (cv.get("text_preview") or "")[:400],
+            "quality_tier": cv_comp.get("quality_tier"),
+            "quality_score": cv_comp.get("quality_score"),
             "nlp": {
                 "pipeline": nlp_meta.get("pipeline"),
                 "document_confidence": nlp_meta.get("document_confidence"),
                 "skills_section_detected": nlp_meta.get("skills_section_detected"),
-                "char_count": nlp_meta.get("char_count"),
+                "char_count": nlp_meta.get("char_count") or cv_comp.get("cv_text_length"),
+                "experience_section_detected": cv_comp.get("structure", {}).get("experience_section_detected"),
+                "bullet_count": cv_comp.get("structure", {}).get("bullet_count"),
             },
             "semantic_similarity_cosine": ml_cos_tgt,
-            "semantic_similarity_engine": "sklearn_tfidf_cosine_v1" if ml_cos_tgt is not None else None,
+            "semantic_similarity_engine": "sklearn_tfidf_cosine_v2" if ml_cos_tgt is not None else None,
             "pdf_extract_ok": pdf_meta.get("pdf_ok"),
             "pdf_pages": pdf_meta.get("pages"),
         },
@@ -360,5 +363,5 @@ def build_employee_dashboard_intel(db: Session, user: User, profile: EmployeePro
         "alignment_score_target_role_gap_math": alignment_gap_math,
         "selected_projects": selected_projects_detail(db, user, profile),
         "open_opportunities": openness[:24],
-        "engine": {"version": "employee_intel_2_sklearn_signals", "sklearn_signals": ml_cos_tgt is not None},
+        "engine": {"version": "employee_intel_3_cv_competency", "sklearn_signals": ml_cos_tgt is not None},
     }

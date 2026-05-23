@@ -27,12 +27,15 @@ import {
   useMediaQuery,
   useTheme
 } from "@mui/material";
+import { Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import AppShell from "../components/AppShell";
 import CourseMaterialViewerModal from "../components/CourseMaterialViewerModal";
 import { api } from "../api/client";
 import { useSearchParams } from "react-router-dom";
 import { exportRowsToCsv } from "../utils/csvExport";
 import { exportElementToPdf } from "../utils/pdfExport";
+import { getChartTheme } from "../utils/chartTheme";
+import { useThemeMode } from "../theme/ThemeModeContext";
 import { getApiErrorMessage } from "../utils/apiError";
 
 const SECTIONS = [
@@ -90,6 +93,7 @@ export default function EmployeeDashboard() {
   const [projectReports, setProjectReports] = useState([]);
   const [selectedProjectId, setSelectedProjectId] = useState("");
   const [recommendations, setRecommendations] = useState([]);
+  const [trainingMeta, setTrainingMeta] = useState(null);
   const [trainingProgress, setTrainingProgress] = useState({ active_courses: [], completed_courses: [] });
   const [careerPaths, setCareerPaths] = useState([]);
   const [goals, setGoals] = useState([]);
@@ -120,28 +124,38 @@ export default function EmployeeDashboard() {
   const [cvBusy, setCvBusy] = useState(false);
   const [careerBusy, setCareerBusy] = useState(false);
   const [snackbar, setSnackbar] = useState({ open: false, message: "" });
+  const { mode } = useThemeMode();
+  const { colors, tooltipStyle } = getChartTheme(mode);
+  const gapChartRows = useMemo(() => (gaps?.chart || []).filter((r) => Number(r.gap) > 0).slice(0, 14), [gaps]);
+  const gapTableRows = useMemo(() => {
+    const rows = gaps?.gaps || [];
+    return rows;
+  }, [gaps]);
 
   const headerKpis = useMemo(() => {
     if (!overview) return [];
     const r = intel?.readiness?.vs_target_role;
     const hasMl = intel?.cv_signal?.semantic_similarity_cosine != null && intel?.engine?.sklearn_signals;
+    const cvQ = intel?.cv_competency || gaps?.cv_competency;
     return [
+      {
+        label: "CV competency quality",
+        value: cvQ?.quality_score != null ? `${cvQ.quality_score}%` : "—",
+        hint: cvQ?.quality_tier
+          ? `Tier: ${cvQ.quality_tier} — structure, sections, and NLP confidence on your résumé.`
+          : "Upload a PDF résumé to unlock deep competency analysis."
+      },
       {
         label: "Target role readiness",
         value: r?.label ? String(r.label) : "—",
-        hint: "Rule-based readiness bands from weighted skill gaps."
+        hint: "Weighted skill gaps vs your target role profile."
       },
       {
         label: "Alignment score (target)",
         value: intel?.alignment_score_target_role != null ? `${intel.alignment_score_target_role}%` : "—",
         hint: hasMl
-          ? "Blended: gap math + scikit-learn TF-IDF cosine vs role profile."
-          : "Gap math only until résumé text supports TF-IDF cosine."
-      },
-      {
-        label: "CV skills detected",
-        value: overview.cv_skills_detected_count != null ? overview.cv_skills_detected_count : "—",
-        hint: "Taxonomy NLP on PDF text (no hallucinated skills)."
+          ? "Gap math + TF–IDF cosine vs role profile from full résumé text."
+          : "Gap math only until résumé supports semantic analysis."
       },
       {
         label: "Weighted gap impact",
@@ -149,11 +163,11 @@ export default function EmployeeDashboard() {
         hint: "Lower is better — drives training prioritization."
       }
     ];
-  }, [overview, intel]);
+  }, [overview, intel, gaps]);
 
   useEffect(() => {
     loadAll();
-  }, []);
+  }, [activeSection]);
 
   useEffect(() => {
     const activeIds = (trainingProgress.active_courses || []).filter((c) => c.session_active).map((c) => c.id);
@@ -206,6 +220,14 @@ export default function EmployeeDashboard() {
       setOverview(ov.data);
       setProfile(pr.data);
       setIntel(intelRes.data);
+      const recPayload = rec.data;
+      if (Array.isArray(recPayload)) {
+        setRecommendations(recPayload);
+        setTrainingMeta(null);
+      } else {
+        setRecommendations(recPayload?.recommendations || []);
+        setTrainingMeta(recPayload?.cv_competency || null);
+      }
       try {
         const opts = await api.get("/registration/options");
         setJobTitles(opts.data?.job_titles || []);
@@ -229,7 +251,6 @@ export default function EmployeeDashboard() {
         setSelectedProjectId("");
         setProjectReports([]);
       }
-      setRecommendations(rec.data || []);
       setTrainingProgress(prog.data || { active_courses: [], completed_courses: [] });
       setCareerPaths(car.data || []);
       setGoals(gl.data || []);
@@ -797,6 +818,31 @@ export default function EmployeeDashboard() {
                   Declare the position you aspire toward (must exist in HR master data) and shortlist staffing opportunities. Each save re-evaluates dashboards so metrics always trace back to CV parsing,
                   inventories, declared targets, and project skill grids.
                 </Typography>
+                {(intel?.cv_competency || gaps?.cv_competency) ? (
+                  <Paper variant="outlined" sx={{ p: 2, mb: 2, borderRadius: 2 }}>
+                    <Typography variant="subtitle2" fontWeight={700} gutterBottom>
+                      Résumé competency profile
+                    </Typography>
+                    <Grid container spacing={2}>
+                      {[
+                        { label: "Quality score", value: `${(intel?.cv_competency || gaps?.cv_competency)?.quality_score}%` },
+                        { label: "Tier", value: (intel?.cv_competency || gaps?.cv_competency)?.quality_tier },
+                        { label: "Skills detected", value: (intel?.cv_competency || gaps?.cv_competency)?.skills_detected },
+                        {
+                          label: "Document confidence",
+                          value: `${(intel?.cv_competency || gaps?.cv_competency)?.document_confidence_pct ?? (intel?.cv_competency || gaps?.cv_competency)?.avg_mention_confidence_pct ?? "—"}%`
+                        }
+                      ].map((item) => (
+                        <Grid item xs={6} sm={3} key={item.label}>
+                          <Typography variant="caption" color="text.secondary">
+                            {item.label}
+                          </Typography>
+                          <Typography fontWeight={800}>{item.value ?? "—"}</Typography>
+                        </Grid>
+                      ))}
+                    </Grid>
+                  </Paper>
+                ) : null}
                 <Divider sx={{ my: 2 }} />
                 <Grid container spacing={2}>
                   <Grid item xs={12} md={6}>
@@ -1081,57 +1127,189 @@ export default function EmployeeDashboard() {
                     Individual skill gap visualization
                   </Typography>
                   <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-                    Gaps reconcile your canonical inventory against HR-required role templates sourced from employee records — CV ingestion pre-seeded many entries. Weighted impact still drives training
-                    sequencing and matches the rationale you see inside recommendations.
+                    Competency comparison for <strong>{gaps?.role_context?.job_title || "your position"}</strong>
+                    {gaps?.role_context?.department ? ` · ${gaps.role_context.department}` : ""} — primary skill{" "}
+                    <strong>{gaps?.role_context?.primary_skill || "—"}</strong>. Blends HR role profile, validated inventory,
+                    and deep résumé evidence (confidence, experience section, inferred levels).
                   </Typography>
+                  {gaps?.cv_competency ? (
+                    <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mt: 1.5 }}>
+                      <Chip
+                        size="small"
+                        color={gaps.cv_competency.quality_tier === "strong" ? "success" : "default"}
+                        label={`CV quality ${gaps.cv_competency.quality_score}% · ${gaps.cv_competency.quality_tier}`}
+                      />
+                      <Chip
+                        size="small"
+                        variant="outlined"
+                        label={`${gaps.cv_competency.skills_detected} skills detected in résumé`}
+                      />
+                      <Chip
+                        size="small"
+                        variant="outlined"
+                        label={`Document confidence ${gaps.cv_competency.document_confidence_pct}%`}
+                      />
+                      {gaps.summary?.role_semantic_similarity_pct != null ? (
+                        <Chip size="small" variant="outlined" label={`Role semantic fit ${gaps.summary.role_semantic_similarity_pct}%`} />
+                      ) : null}
+                    </Stack>
+                  ) : null}
                   <Divider sx={{ my: 2 }} />
-                  <TableContainer>
-                    <Table size="small">
-                      <TableHead>
-                        <TableRow>
-                          <TableCell>Skill</TableCell>
-                          <TableCell align="right">Required</TableCell>
-                          <TableCell align="right">Current</TableCell>
-                          <TableCell align="right">Gap</TableCell>
-                          <TableCell align="right">Weight</TableCell>
-                          <TableCell align="right">Weighted impact</TableCell>
-                          <TableCell>Severity</TableCell>
-                          <TableCell>Why</TableCell>
-                        </TableRow>
-                      </TableHead>
-                      <TableBody>
-                        {(gaps?.gaps || []).map((g) => (
-                          <TableRow key={g.skill}>
-                            <TableCell>{g.skill}</TableCell>
-                            <TableCell align="right">{g.required_level}</TableCell>
-                            <TableCell align="right">{g.current_level}</TableCell>
-                            <TableCell align="right">{g.gap}</TableCell>
-                            <TableCell align="right">{g.importance_weight != null ? Number(g.importance_weight).toFixed(2) : "—"}</TableCell>
-                            <TableCell align="right">{g.weighted_gap_impact != null ? Number(g.weighted_gap_impact).toFixed(2) : "—"}</TableCell>
-                            <TableCell>
-                              <Chip
-                                size="small"
-                                color={
-                                  g.severity === "high"
-                                    ? "error"
-                                    : g.severity === "medium"
-                                      ? "warning"
-                                      : g.severity === "low"
-                                        ? "warning"
-                                        : "success"
-                                }
-                                label={g.severity === "none" ? "meets target" : g.severity}
-                                variant={g.severity === "none" ? "outlined" : "filled"}
-                              />
-                            </TableCell>
-                            <TableCell sx={{ maxWidth: 280, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} title={g.explanation}>
-                              {g.explanation || "—"}
-                            </TableCell>
+                  {gaps?.summary ? (
+                    <Grid container spacing={2} sx={{ mb: 2 }}>
+                      <Grid item xs={6} sm={4} md={2}>
+                        <Typography variant="caption" color="text.secondary">
+                          Skills in scope
+                        </Typography>
+                        <Typography fontWeight={800}>{gaps.summary.skills_in_scope}</Typography>
+                      </Grid>
+                      <Grid item xs={6} sm={4} md={2}>
+                        <Typography variant="caption" color="text.secondary">
+                          With gap
+                        </Typography>
+                        <Typography fontWeight={800} color="error.main">
+                          {gaps.summary.skills_with_gap}
+                        </Typography>
+                      </Grid>
+                      <Grid item xs={6} sm={4} md={2}>
+                        <Typography variant="caption" color="text.secondary">
+                          Meets target
+                        </Typography>
+                        <Typography fontWeight={800} color="success.main">
+                          {gaps.summary.skills_meeting_target}
+                        </Typography>
+                      </Grid>
+                      <Grid item xs={6} sm={4} md={2}>
+                        <Typography variant="caption" color="text.secondary">
+                          High severity
+                        </Typography>
+                        <Typography fontWeight={800}>{gaps.summary.high_severity_gaps}</Typography>
+                      </Grid>
+                      <Grid item xs={6} sm={4} md={2}>
+                        <Typography variant="caption" color="text.secondary">
+                          Total weighted impact
+                        </Typography>
+                        <Typography fontWeight={800}>{gaps.summary.total_weighted_impact}</Typography>
+                      </Grid>
+                      <Grid item xs={6} sm={4} md={2}>
+                        <Typography variant="caption" color="text.secondary">
+                          Role alignment
+                        </Typography>
+                        <Typography fontWeight={800}>{gaps.summary.alignment_score_pct}%</Typography>
+                      </Grid>
+                      <Grid item xs={6} sm={4} md={2}>
+                        <Typography variant="caption" color="text.secondary">
+                          CV-evidenced gaps
+                        </Typography>
+                        <Typography fontWeight={800}>{gaps.summary.gaps_with_cv_evidence ?? 0}</Typography>
+                      </Grid>
+                      <Grid item xs={6} sm={4} md={2}>
+                        <Typography variant="caption" color="text.secondary">
+                          In experience section
+                        </Typography>
+                        <Typography fontWeight={800}>{gaps.summary.gaps_in_experience_section ?? 0}</Typography>
+                      </Grid>
+                    </Grid>
+                  ) : null}
+                  {gapChartRows.length === 0 ? (
+                    <Alert severity="success" sx={{ mb: 2 }}>
+                      All required skills meet or exceed targets for your HR role profile. Upload skills via résumé or
+                      self-assessment if something is missing.
+                    </Alert>
+                  ) : (
+                    <Box sx={{ width: "100%", height: 320, mb: 2 }}>
+                      <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 1 }}>
+                        Required vs current competency (top gaps by weighted impact)
+                      </Typography>
+                      <ResponsiveContainer>
+                        <BarChart data={gapChartRows} margin={{ top: 8, right: 12, left: 0, bottom: 48 }}>
+                          <CartesianGrid strokeDasharray="3 3" stroke={colors.grid} />
+                          <XAxis dataKey="skill_label" tick={{ fontSize: 11 }} interval={0} angle={-28} textAnchor="end" height={70} />
+                          <YAxis allowDecimals={false} domain={[0, 5]} tick={{ fontSize: 11 }} label={{ value: "Level", angle: -90, position: "insideLeft" }} />
+                          <Tooltip contentStyle={tooltipStyle} />
+                          <Legend />
+                          <Bar dataKey="required" name="Required (HR profile)" fill={colors.danger} radius={[4, 4, 0, 0]} />
+                          <Bar dataKey="current" name="Your inventory" fill={colors.primary} radius={[4, 4, 0, 0]} />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </Box>
+                  )}
+                  {gapTableRows.length === 0 ? (
+                    <Alert severity="info">Loading gap breakdown…</Alert>
+                  ) : (
+                    <TableContainer>
+                      <Table size="small">
+                        <TableHead>
+                          <TableRow>
+                            <TableCell>Skill</TableCell>
+                            <TableCell align="right">Required</TableCell>
+                            <TableCell align="right">Current</TableCell>
+                            <TableCell align="right">CV level</TableCell>
+                            <TableCell align="right">Gap</TableCell>
+                            <TableCell>CV evidence</TableCell>
+                            <TableCell>Source</TableCell>
+                            <TableCell align="right">Impact</TableCell>
+                            <TableCell>Severity</TableCell>
+                            <TableCell>Competency note</TableCell>
                           </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  </TableContainer>
+                        </TableHead>
+                        <TableBody>
+                          {gapTableRows.map((g) => (
+                            <TableRow key={g.skill} sx={{ bgcolor: g.gap > 0 ? "action.hover" : undefined }}>
+                              <TableCell>
+                                {g.skill}
+                                {g.in_cv ? (
+                                  <Chip size="small" label="on CV" variant="outlined" sx={{ ml: 0.75 }} />
+                                ) : null}
+                                {g.in_experience_section ? (
+                                  <Chip size="small" label="experience" color="success" variant="outlined" sx={{ ml: 0.5 }} />
+                                ) : null}
+                              </TableCell>
+                              <TableCell align="right">{g.required_level}</TableCell>
+                              <TableCell align="right">{g.current_level}</TableCell>
+                              <TableCell align="right">{g.cv_inferred_level ?? "—"}</TableCell>
+                              <TableCell align="right">{g.gap}</TableCell>
+                              <TableCell>
+                                {g.cv_confidence_pct != null && g.cv_confidence_pct > 0
+                                  ? `${g.cv_confidence_pct}%`
+                                  : "—"}
+                              </TableCell>
+                              <TableCell>
+                                <Chip size="small" variant="outlined" label={g.evidence_source || "—"} />
+                              </TableCell>
+                              <TableCell align="right">
+                                {g.weighted_gap_impact != null ? Number(g.weighted_gap_impact).toFixed(2) : "—"}
+                              </TableCell>
+                              <TableCell>
+                                <Chip
+                                  size="small"
+                                  color={
+                                    g.severity === "high"
+                                      ? "error"
+                                      : g.severity === "medium"
+                                        ? "warning"
+                                        : g.severity === "low"
+                                          ? "warning"
+                                          : "success"
+                                  }
+                                  label={g.severity === "none" ? "meets target" : g.severity}
+                                  variant={g.severity === "none" ? "outlined" : "filled"}
+                                />
+                              </TableCell>
+                              <TableCell sx={{ maxWidth: 320, whiteSpace: "normal" }}>
+                                {g.competency_note || g.explanation || "—"}
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </TableContainer>
+                  )}
+                  {gaps?.explainability?.rule ? (
+                    <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 2 }}>
+                      {gaps.explainability.rule} {gaps.explainability.weighted_gaps}
+                    </Typography>
+                  ) : null}
                 </CardContent>
               </Card>
             ) : null}
@@ -1314,32 +1492,102 @@ export default function EmployeeDashboard() {
                   <Typography variant="h6" fontWeight={800}>
                     AI training recommendations
                   </Typography>
+                  <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                    Ranked from your role gaps using official vendor programs, full résumé TF–IDF match, per-skill CV
+                    evidence (experience section weighted higher), and inventory source confidence.
+                  </Typography>
+                  {(trainingMeta || intel?.cv_competency) ? (
+                    <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mt: 1.5 }}>
+                      <Chip
+                        size="small"
+                        label={`CV quality ${(trainingMeta || intel?.cv_competency)?.quality_score}% · ${(trainingMeta || intel?.cv_competency)?.quality_tier}`}
+                      />
+                      {(trainingMeta || intel?.cv_competency)?.role_semantic_similarity_pct != null ? (
+                        <Chip
+                          size="small"
+                          variant="outlined"
+                          label={`Role semantic ${(trainingMeta || intel?.cv_competency).role_semantic_similarity_pct}%`}
+                        />
+                      ) : null}
+                    </Stack>
+                  ) : null}
                   <Divider sx={{ my: 2 }} />
-                  <TableContainer><Table size="small"><TableHead><TableRow>
-                  <TableCell>Course</TableCell><TableCell>Skill</TableCell><TableCell>Match %</TableCell><TableCell>Evidence</TableCell><TableCell>Cert Fit</TableCell><TableCell>CV Fit</TableCell><TableCell>Projected Gap Reduction</TableCell><TableCell>Why Recommended</TableCell><TableCell>Mode</TableCell><TableCell>Duration</TableCell><TableCell align="right">Action</TableCell>
-                  </TableRow></TableHead><TableBody>
-                    {recommendations.map((r, idx) => (
-                      <TableRow key={`${r.course}-${idx}`}>
-                        <TableCell>{r.course}</TableCell>
-                        <TableCell>{r.skill}</TableCell>
-                        <TableCell>{r.match_pct}</TableCell>
-                      <TableCell>{r.evidence_confidence_pct ?? 0}%</TableCell>
-                      <TableCell>{r.cert_relevance_pct ?? 0}%</TableCell>
-                      <TableCell>{r.cv_relevance_pct ?? 0}%</TableCell>
-                      <TableCell>{r.projected_gap_reduction_pct ?? 0}%</TableCell>
-                      <TableCell sx={{ maxWidth: 300, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                        {r.rationale || "-"}
-                      </TableCell>
-                        <TableCell>{r.mode}</TableCell>
-                        <TableCell>{r.duration_weeks} weeks</TableCell>
-                        <TableCell align="right">
-                          <Button size="small" variant="contained" onClick={() => enrollInTraining(r.course, r.skill)}>
-                            Enroll
-                          </Button>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody></Table></TableContainer>
+                  {recommendations.length === 0 ? (
+                    <Alert severity="success">
+                      No skill gaps detected against your HR role profile. Recommendations appear when required skills exceed your
+                      validated inventory levels.
+                    </Alert>
+                  ) : null}
+                  {recommendations.length > 0 ? (
+                    <TableContainer>
+                      <Table size="small">
+                        <TableHead>
+                          <TableRow>
+                            <TableCell>Official course</TableCell>
+                            <TableCell>Provider</TableCell>
+                            <TableCell>Skill gap</TableCell>
+                            <TableCell align="right">Required</TableCell>
+                            <TableCell align="right">Current</TableCell>
+                            <TableCell align="right">Gap</TableCell>
+                            <TableCell align="right">CV evidence</TableCell>
+                            <TableCell align="right">Semantic</TableCell>
+                            <TableCell align="right">Est. gap closure</TableCell>
+                            <TableCell align="right">Priority</TableCell>
+                            <TableCell align="right">Match %</TableCell>
+                            <TableCell>Rationale</TableCell>
+                            <TableCell>Duration</TableCell>
+                            <TableCell align="right">Action</TableCell>
+                          </TableRow>
+                        </TableHead>
+                        <TableBody>
+                          {recommendations.map((r, idx) => (
+                            <TableRow key={`${r.course_id || r.course}-${idx}`}>
+                              <TableCell sx={{ maxWidth: 220 }}>
+                                {r.official_url ? (
+                                  <Typography
+                                    component="a"
+                                    href={r.official_url}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    variant="body2"
+                                    fontWeight={600}
+                                    sx={{ color: "primary.main", textDecoration: "none" }}
+                                  >
+                                    {r.course}
+                                  </Typography>
+                                ) : (
+                                  r.course
+                                )}
+                              </TableCell>
+                              <TableCell sx={{ maxWidth: 160 }}>{r.provider || "—"}</TableCell>
+                              <TableCell>{r.skill}</TableCell>
+                              <TableCell align="right">{r.required_level ?? "—"}</TableCell>
+                              <TableCell align="right">{r.current_level ?? "—"}</TableCell>
+                              <TableCell align="right">{r.gap ?? "—"}</TableCell>
+                              <TableCell align="right">
+                                {r.cv_relevance_pct ?? 0}%
+                                {r.cv_in_experience ? " · exp" : ""}
+                              </TableCell>
+                              <TableCell align="right">{r.semantic_match_pct ?? "—"}%</TableCell>
+                              <TableCell align="right">{r.projected_gap_reduction_pct ?? "—"}%</TableCell>
+                              <TableCell align="right">{r.priority_score ?? "—"}</TableCell>
+                              <TableCell align="right">{r.match_pct}</TableCell>
+                              <TableCell sx={{ maxWidth: 320, whiteSpace: "normal" }}>{r.rationale || "—"}</TableCell>
+                              <TableCell>
+                                {r.duration_weeks} wk · {r.mode}
+                                {r.certification ? " · cert" : ""}
+                              </TableCell>
+                              <TableCell align="right">
+                                <Button size="small" variant="contained" onClick={() => enrollInTraining(r.course, r.skill)}>
+                                  Enroll
+                                </Button>
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </TableContainer>
+                  ) : null}
                 </CardContent>
               </Card>
             ) : null}
@@ -1472,10 +1720,46 @@ export default function EmployeeDashboard() {
             {!loading && activeSection === "career" ? (
               <Card variant="outlined"><CardContent>
                 <Typography variant="h6" fontWeight={800}>Career path suggestions</Typography>
+                <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                  Roles are loaded from your organization&apos;s master job-title catalog. Match % blends your skill inventory,
+                  required profile per title, and scikit-learn TF–IDF similarity to your résumé.
+                </Typography>
                 <Divider sx={{ my: 2 }} />
-                <TableContainer><Table size="small"><TableHead><TableRow><TableCell>Role</TableCell><TableCell>Career Match %</TableCell><TableCell>Required Skills</TableCell></TableRow></TableHead><TableBody>
-                  {careerPaths.map((r) => <TableRow key={r.role}><TableCell>{r.role}</TableCell><TableCell>{r.career_match_pct}</TableCell><TableCell>{Object.entries(r.required_skills || {}).map(([k,v]) => `${k}(${v})`).join(", ")}</TableCell></TableRow>)}
-                </TableBody></Table></TableContainer>
+                {careerPaths.length === 0 ? (
+                  <Alert severity="info">No job titles in master data yet. Ask HR to add titles under Master data control.</Alert>
+                ) : (
+                  <TableContainer>
+                    <Table size="small">
+                      <TableHead>
+                        <TableRow>
+                          <TableCell>Role</TableCell>
+                          <TableCell align="right">Match %</TableCell>
+                          <TableCell align="right">ML similarity</TableCell>
+                          <TableCell>Missing skills</TableCell>
+                          <TableCell>Required skills</TableCell>
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {careerPaths.map((r) => (
+                          <TableRow key={r.role} sx={{ bgcolor: r.is_current_hr_title ? "action.selected" : undefined }}>
+                            <TableCell>
+                              {r.role}
+                              {r.is_current_hr_title ? <Chip size="small" label="Your HR title" sx={{ ml: 0.75 }} /> : null}
+                            </TableCell>
+                            <TableCell align="right">{r.career_match_pct}</TableCell>
+                            <TableCell align="right">{r.semantic_similarity_pct != null ? `${r.semantic_similarity_pct}%` : "—"}</TableCell>
+                            <TableCell>{(r.missing_skills || []).join(", ") || "—"}</TableCell>
+                            <TableCell>
+                              {Object.entries(r.required_skills || {})
+                                .map(([k, v]) => `${k}(${v})`)
+                                .join(", ")}
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
+                )}
               </CardContent></Card>
             ) : null}
 

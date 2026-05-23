@@ -20,7 +20,15 @@ from app.models.user_skill import UserSkill
 
 from app.ai.gap import compute_skill_gaps
 from app.services.required_skill_profile import required_skill_profile_with_weights
-from app.services.skill_normalization import normalize_skill_level_map
+from app.services.skill_normalization import normalize_skill_level_map, normalize_skill_name
+from app.services.workforce_analytics import (
+    build_hr_training_planning,
+    build_performance_support_row,
+    build_talent_pipeline_row,
+    count_active_projects,
+    count_compliance_expiring_soon,
+    suggest_job_title_for_skill,
+)
 
 router = APIRouter()
 
@@ -91,14 +99,8 @@ def hr_overview(
         or 0
     )
 
-    # Certifications not modeled; approximate from CV extracts.
-    expiring_soon = 0
-    total_with_certs = (
-        db.query(func.count(EmployeeProfile.id))
-        .filter(EmployeeProfile.cv_extract.is_not(None))
-        .scalar()
-        or 0
-    )
+    expiring_soon = count_compliance_expiring_soon(db)
+    active_projects = count_active_projects(db)
 
     gap_snapshot = _compute_hr_org_skill_gaps(db, department=None)
     gap_rows = gap_snapshot.get("rows") or []
@@ -107,17 +109,13 @@ def hr_overview(
     return {
         "total_employees": int(total_employees),
         "departments": int(departments),
-        "active_projects": 0,
+        "active_projects": int(active_projects),
         "pending_approvals": int(pending_approvals),
         "skill_gap_count": int(skill_gap_count),
         "skill_gap_score_sum": int(gap_snapshot.get("gap_score_sum") or 0),
         "training_in_progress": int(training_in_progress),
         "certifications_expiring_soon": int(expiring_soon),
-        "notes": {
-            "training": "training_in_progress counts HR-assigned training records (persisted hr_actions).",
-            "certifications": f"Certification expiry not modeled; profiles_with_cert_data={int(total_with_certs)}.",
-            "projects": "Project module not yet modeled; active_projects is 0.",
-        },
+        "engine": "hr_overview_live_db_v1",
     }
 
 
@@ -331,50 +329,14 @@ def hr_training_planning(
 ) -> dict:
     employees, current_map, required_map = _load_employee_skill_maps(db)
     if not employees:
-        return {"budget": {"total": 0, "used": 0, "remaining": 0}, "programs": [], "roi_estimate": 0.0}
-
-    gap_skill_totals: dict[str, int] = {}
-    for e in employees:
-        current = current_map.get(str(e.id), {})
-        required = required_map.get(str(e.id), {})
-        for skill, req_level in required.items():
-            gap = max(0, int(req_level) - int(current.get(skill, 0)))
-            if gap > 0:
-                gap_skill_totals[skill] = gap_skill_totals.get(skill, 0) + gap
-
-    ranked = sorted(gap_skill_totals.items(), key=lambda x: x[1], reverse=True)[:8]
-    programs: list[dict] = []
-    total_budget = 0
-    for idx, (skill, gap_total) in enumerate(ranked, start=1):
-        employees_needing = sum(
-            1
-            for e in employees
-            if max(
-                0,
-                int(required_map.get(str(e.id), {}).get(skill, 0))
-                - int(current_map.get(str(e.id), {}).get(skill, 0)),
-            )
-            > 0
-        )
-        cost = int(max(150, gap_total * 90))
-        total_budget += cost
-        programs.append(
-            {
-                "program_name": f"{skill.title()} Mastery Program {idx}",
-                "target_skill": skill,
-                "cost": cost,
-                "employees_assigned": int(employees_needing),
-                "budget_usage_pct": round((cost / max(1, total_budget)) * 100, 2),
-            }
-        )
-
-    used_budget = int(round(total_budget * 0.64))
-    roi_estimate = round((0.28 * used_budget) / max(1, used_budget), 4)
-    return {
-        "budget": {"total": int(total_budget), "used": int(used_budget), "remaining": int(total_budget - used_budget)},
-        "programs": programs,
-        "roi_estimate": roi_estimate,
-    }
+        return {
+            "budget": {"committed_spend": 0, "recommended_investment": 0, "uncommitted_recommendation": 0},
+            "programs": [],
+            "training_completion_rate_pct": 0.0,
+            "assignment_stats": {"total": 0, "active": 0, "completed": 0},
+            "engine": "org_gaps_official_catalog_live_assignments_v2",
+        }
+    return build_hr_training_planning(db, employees, current_map, required_map)
 
 
 def _compliance_renewal_map(profile: EmployeeProfile) -> dict[str, str]:
@@ -404,18 +366,23 @@ def hr_compliance(
     out: list[dict] = []
     expiring_soon = 0
     missing = 0
-    for idx, (user, profile) in enumerate(rows):
+    for user, profile in rows:
         renewal_map = _compliance_renewal_map(profile)
         certs = (profile.cv_extract or {}).get("certifications") or []
         if certs:
             cert_label = certs[0][:120]
-            expiry = today + timedelta(days=15 + (idx % 120))
+            expiry = None
+            expiry_display = "-"
             if cert_label in renewal_map:
                 try:
                     expiry = date.fromisoformat(renewal_map[cert_label])
+                    expiry_display = expiry.isoformat()
                 except ValueError:
-                    pass
-            st = "Expiring Soon" if expiry <= limit_date else "Compliant"
+                    expiry = None
+            if expiry is None:
+                st = "Expiry unknown — HR review"
+            else:
+                st = "Expiring Soon" if expiry <= limit_date else "Compliant"
             if st == "Expiring Soon":
                 expiring_soon += 1
             out.append(
@@ -423,7 +390,7 @@ def hr_compliance(
                     "user_id": str(user.id),
                     "employee": user.full_name,
                     "certification": cert_label,
-                    "expiry_date": expiry.isoformat(),
+                    "expiry_date": expiry_display,
                     "status": st,
                 }
             )
@@ -433,8 +400,13 @@ def hr_compliance(
                 try:
                     expiry_d = date.fromisoformat(renewal_map[none_key])
                 except ValueError:
-                    expiry_d = today + timedelta(days=365)
-                st = "Compliant" if expiry_d > limit_date else "Expiring Soon"
+                    expiry_d = None
+                if expiry_d is None:
+                    st = "Expiry unknown — HR review"
+                    expiry_iso = "-"
+                else:
+                    st = "Compliant" if expiry_d > limit_date else "Expiring Soon"
+                    expiry_iso = expiry_d.isoformat()
                 if st == "Expiring Soon":
                     expiring_soon += 1
                 out.append(
@@ -442,7 +414,7 @@ def hr_compliance(
                         "user_id": str(user.id),
                         "employee": user.full_name,
                         "certification": "None",
-                        "expiry_date": expiry_d.isoformat(),
+                        "expiry_date": expiry_iso,
                         "status": st,
                     }
                 )
@@ -474,8 +446,9 @@ def hr_recruitment_insights(
             urgency = "Critical" if r["gap"] >= 6 else "High"
             needed = max(1, round(r["gap"] / 3))
             missing_skills.append({"skill": r["skill"], "gap_level": r["gap"], "urgency": urgency})
-            hiring_suggestions.append({"role": f"{r['skill'].title()} Specialist", "number_needed": int(needed)})
-    return {"missing_skills": missing_skills[:20], "hiring_suggestions": hiring_suggestions[:20]}
+            title = suggest_job_title_for_skill(db, r["skill"]) or f"{r['skill'].replace('-', ' ').title()} (from catalog)"
+            hiring_suggestions.append({"role": title, "number_needed": int(needed), "target_skill": r["skill"]})
+    return {"missing_skills": missing_skills[:20], "hiring_suggestions": hiring_suggestions[:20], "engine": "org_gaps_job_catalog_v1"}
 
 
 @router.get("/hr/talent-pipeline")
@@ -483,30 +456,28 @@ def hr_talent_pipeline(
     db: Session = Depends(get_db),
     _: User = Depends(require_roles(UserRole.hr_admin)),
 ) -> dict:
-    employees, current_map, _required = _load_employee_skill_maps(db)
+    employees, current_map, required_map = _load_employee_skill_maps(db)
+    profiles = {
+        str(p.user_id): p
+        for p in db.query(EmployeeProfile).filter(EmployeeProfile.user_id.in_([e.id for e in employees])).all()
+    }
     out: list[dict] = []
     for e in employees:
-        current = current_map.get(str(e.id), {})
-        if current:
-            avg_skill = sum(current.values()) / max(1, len(current))
-        else:
-            avg_skill = 0.0
-        skill_growth = round(avg_skill * 16.0, 2)
-        training_completion = min(100.0, 35.0 + avg_skill * 12.5)
-        performance = min(100.0, 30.0 + avg_skill * 14.0)
-        promotion_score = round((performance + skill_growth + training_completion) / 3.0, 2)
+        uid = str(e.id)
+        req = required_map.get(uid, {})
+        _, weights = required_skill_profile_with_weights(e)
         out.append(
-            {
-                "user_id": str(e.id),
-                "employee": e.full_name,
-                "department": e.department,
-                "skill_growth": skill_growth,
-                "promotion_readiness_score": promotion_score,
-                "high_potential": promotion_score >= 65,
-            }
+            build_talent_pipeline_row(
+                db,
+                e,
+                profiles.get(uid),
+                current_map.get(uid, {}),
+                req,
+                weights,
+            )
         )
     out.sort(key=lambda r: r["promotion_readiness_score"], reverse=True)
-    return {"rows": out[:200]}
+    return {"rows": out[:200], "engine": "workforce_db_sklearn_v1"}
 
 
 @router.get("/hr/performance-support")
@@ -515,28 +486,25 @@ def hr_performance_support(
     _: User = Depends(require_roles(UserRole.hr_admin)),
 ) -> dict:
     employees, current_map, required_map = _load_employee_skill_maps(db)
+    profiles = {
+        str(p.user_id): p
+        for p in db.query(EmployeeProfile).filter(EmployeeProfile.user_id.in_([e.id for e in employees])).all()
+    }
     rows: list[dict] = []
     for e in employees:
-        current = current_map.get(str(e.id), {})
-        required = required_map.get(str(e.id), {})
-        avg_current = (sum(current.values()) / max(1, len(current))) if current else 0.0
-        avg_required = (sum(required.values()) / max(1, len(required))) if required else 0.0
-        skill_improvement = round(max(0.0, avg_current) * 18.0, 2)
-        project_success = round(min(100.0, 45.0 + avg_current * 11.0), 2)
-        training_completion = round(min(100.0, 35.0 + avg_current * 10.0), 2)
-        performance_score = round((project_success + skill_improvement + training_completion) / 3.0, 2)
+        uid = str(e.id)
+        req = required_map.get(uid, {})
+        _, weights = required_skill_profile_with_weights(e)
         rows.append(
-            {
-                "user_id": str(e.id),
-                "employee": e.full_name,
-                "department": e.department,
-                "project_success": project_success,
-                "skill_improvement": skill_improvement,
-                "training_completion": training_completion,
-                "performance_score": performance_score,
-                "gap_to_required": round(max(0.0, avg_required - avg_current), 2),
-            }
+            build_performance_support_row(
+                db,
+                e,
+                profiles.get(uid),
+                current_map.get(uid, {}),
+                req,
+                weights,
+            )
         )
     rows.sort(key=lambda r: r["performance_score"], reverse=True)
-    return {"rows": rows[:300]}
+    return {"rows": rows[:300], "engine": "workforce_db_v1"}
 

@@ -143,7 +143,7 @@ export default function ManagerDashboard() {
 
   useEffect(() => {
     load();
-  }, []);
+  }, [activeSection]);
 
   useEffect(() => {
     const section = searchParams.get("section");
@@ -727,6 +727,10 @@ export default function ManagerDashboard() {
             {!loading && activeSection === "matching" ? (
               <Card variant="outlined"><CardContent>
                 <Typography variant="h6" fontWeight={800}>AI employee matching</Typography>
+                <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                  Ranks your team using full CV text (TF–IDF project similarity), per-skill CV evidence confidence,
+                  experience-section detection, and skill inventory — not a simple keyword list.
+                </Typography>
                 <Divider sx={{ my: 2 }} />
                 {team.length === 0 ? (
                   <Alert severity="warning" sx={{ mb: 2 }}>
@@ -773,7 +777,20 @@ export default function ManagerDashboard() {
                   </Alert>
                 ) : null}
                 <TableContainer><Table size="small"><TableHead><TableRow>
-                  <TableCell>Employee</TableCell><TableCell>Job Title</TableCell><TableCell>Fit Class</TableCell><TableCell>Overall Match</TableCell><TableCell>Skill Fit</TableCell><TableCell>Title Fit</TableCell><TableCell>Experience</TableCell><TableCell>Performance</TableCell><TableCell>Evidence</TableCell><TableCell>Cert/Training</TableCell><TableCell>CV Fit</TableCell><TableCell>Dept</TableCell><TableCell>Primary Skill</TableCell><TableCell>Gap</TableCell><TableCell>Availability</TableCell><TableCell>Eligibility</TableCell><TableCell>Recommendation</TableCell>
+                  <TableCell>Employee</TableCell>
+                  <TableCell>Job Title</TableCell>
+                  <TableCell>Fit Class</TableCell>
+                  <TableCell>Overall Match</TableCell>
+                  <TableCell>Skill Fit</TableCell>
+                  <TableCell>CV Evidence</TableCell>
+                  <TableCell>CV Semantic</TableCell>
+                  <TableCell>CV Quality</TableCell>
+                  <TableCell>Title Fit</TableCell>
+                  <TableCell>Experience</TableCell>
+                  <TableCell>Gap</TableCell>
+                  <TableCell>Availability</TableCell>
+                  <TableCell>Eligibility</TableCell>
+                  <TableCell>AI rationale</TableCell>
                 </TableRow></TableHead><TableBody>
                   {matches.map((m) => (
                     <TableRow key={m.employee_id}>
@@ -782,16 +799,24 @@ export default function ManagerDashboard() {
                       <TableCell>
                         <Chip size="small" label={m.fit_class || "Unknown"} color={m.fit_class === "Best Fit" ? "success" : m.fit_class === "Good Fit" ? "primary" : m.fit_class === "Risky" ? "warning" : "default"} />
                       </TableCell>
-                      <TableCell>{m.match_pct}</TableCell>
+                      <TableCell>{m.match_pct}%</TableCell>
                       <TableCell>{m.skill_match_pct}%</TableCell>
+                      <TableCell>{m.cv_score}%</TableCell>
+                      <TableCell>{m.cv_semantic_pct != null ? `${m.cv_semantic_pct}%` : "—"}</TableCell>
+                      <TableCell>
+                        {m.cv_quality_pct != null ? (
+                          <Chip
+                            size="small"
+                            variant="outlined"
+                            label={`${m.cv_quality_pct}% · ${m.cv_quality_tier || "n/a"}`}
+                            color={m.cv_quality_tier === "strong" ? "success" : m.cv_quality_tier === "weak" || m.cv_quality_tier === "minimal" ? "warning" : "default"}
+                          />
+                        ) : (
+                          "—"
+                        )}
+                      </TableCell>
                       <TableCell>{m.title_match_pct}%</TableCell>
                       <TableCell>{m.experience_score}%</TableCell>
-                      <TableCell>{m.performance_score}%</TableCell>
-                      <TableCell>{m.evidence_confidence}%</TableCell>
-                      <TableCell>{m.cert_score}%</TableCell>
-                      <TableCell>{m.cv_score}%</TableCell>
-                      <TableCell>{m.department_match ? "Match" : "Mismatch"}</TableCell>
-                      <TableCell>{m.primary_skill_match ? "Match" : "Mismatch"}</TableCell>
                       <TableCell>{m.gap}</TableCell>
                       <TableCell>{m.availability ? "Available" : "Busy"}</TableCell>
                       <TableCell>
@@ -801,7 +826,11 @@ export default function ManagerDashboard() {
                           label={m.eligible ? "Eligible" : (m.eligibility_reason || "Not eligible")}
                         />
                       </TableCell>
-                      <TableCell>{m.recommendation || "-"}</TableCell>
+                      <TableCell sx={{ maxWidth: 280 }}>
+                        <Typography variant="caption" display="block">
+                          {(m.highlights || []).slice(0, 2).join(" · ") || m.recommendation || "—"}
+                        </Typography>
+                      </TableCell>
                     </TableRow>
                   ))}
                 </TableBody></Table></TableContainer>

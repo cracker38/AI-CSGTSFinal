@@ -17,5 +17,3 @@ pandas==2.2.2
 scikit-learn==1.5.1
 
 pypdf==4.3.1
-
-pytest==8.3.3

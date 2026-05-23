@@ -28,6 +28,9 @@ export default defineConfig(({ mode }) => {
     server: {
       port: 5173,
       strictPort: false,
+      headers: {
+        "Cache-Control": "no-store"
+      },
       // Browser → same origin /api/v1 → forwarded here (see README: uvicorn --port 8010).
       proxy: {
         "/api": {

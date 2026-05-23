@@ -125,6 +125,28 @@ def _compute_context_alignment(
     }
 
 
+def cv_text_for_user(db: Session, user_id: uuid.UUID) -> str:
+    """Best available résumé text for ML matching (full extract, else PDF, else preview)."""
+    profile = db.query(EmployeeProfile).filter(EmployeeProfile.user_id == user_id).one_or_none()
+    cv = (profile.cv_extract if profile and isinstance(profile.cv_extract, dict) else {}) or {}
+    stored_ml = str(cv.get("text_for_ml") or "").strip()
+    if len(stored_ml) >= 400:
+        return stored_ml[:80000]
+    doc = (
+        db.query(CvDocument)
+        .filter(CvDocument.user_id == user_id)
+        .order_by(CvDocument.created_at.desc())
+        .first()
+    )
+    if doc and doc.stored_path:
+        raw, _ = _extract_text_from_pdf(doc.stored_path)
+        pdf_text = _normalize_text(raw)
+        if len(pdf_text.strip()) >= 80:
+            return pdf_text[:80000]
+    preview = str(cv.get("text_preview") or "").strip()
+    return preview[:80000]
+
+
 def save_and_process_cv(
     db: Session,
     *,
@@ -166,6 +188,7 @@ def save_and_process_cv(
         "certifications": certifications,
         "experience_years": years_exp,
         "text_preview": _normalize_text(raw_text)[:2000],
+        "text_for_ml": _normalize_text(raw_text)[:80000],
     }
 
     doc = CvDocument(
