@@ -21,6 +21,7 @@ import {
   TableHead,
   TableRow,
   TextField,
+  Tooltip,
   Typography
 } from "@mui/material";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
@@ -43,11 +44,101 @@ const SECTIONS = [
   { key: "alerts", label: "Alerts & risks" }
 ];
 
-function fitClassChipColor(fitClass) {
-  if (fitClass === "Best Fit") return "success";
-  if (fitClass === "Good Fit") return "primary";
-  if (fitClass === "Risky") return "warning";
-  return "default";
+function fitClassTextColor(fitClass) {
+  if (fitClass === "Best Fit") return "success.main";
+  if (fitClass === "Good Fit") return "primary.main";
+  if (fitClass === "Risky") return "warning.main";
+  return "text.primary";
+}
+
+function formatEligibilityBlockers(reason) {
+  if (!reason) return [];
+  return String(reason)
+    .split(",")
+    .map((part) => part.trim().replace(/_/g, " "))
+    .filter(Boolean);
+}
+
+function MatchStatusStrip({ match, compact = false }) {
+  const blockers = formatEligibilityBlockers(match.eligibility_reason);
+  const qualityColor =
+    match.cv_quality_tier === "strong"
+      ? "success.main"
+      : match.cv_quality_tier === "weak" || match.cv_quality_tier === "minimal"
+        ? "warning.main"
+        : "text.primary";
+
+  const items = [
+    {
+      key: "fit",
+      label: "Fit class",
+      value: match.fit_class || "Unknown",
+      color: fitClassTextColor(match.fit_class),
+      hint: "Overall assignment fit tier from CV + skills."
+    },
+    {
+      key: "quality",
+      label: "CV quality",
+      value: match.cv_quality_pct != null ? `${match.cv_quality_pct}%` : "—",
+      color: qualityColor,
+      hint: "Résumé structure, sections, and NLP confidence.",
+      tier: match.cv_quality_tier
+    },
+    {
+      key: "eligibility",
+      label: "Eligibility",
+      value: match.eligible ? "Eligible" : "Not eligible",
+      color: match.eligible ? "success.main" : "warning.main",
+      hint: match.eligible ? "Passes hard rules for assignment." : blockers.join(", ") || "Blocked by hard rules."
+    }
+  ];
+
+  return (
+    <Stack
+      direction={compact ? "column" : { xs: "column", sm: "row" }}
+      spacing={1}
+      useFlexGap
+      flexWrap="wrap"
+      sx={{ width: "100%" }}
+    >
+      {items.map((item) => (
+        <Tooltip key={item.key} title={item.hint} arrow placement="top">
+          <Box
+            sx={{
+              flex: compact ? "1 1 auto" : { xs: "1 1 100%", sm: "1 1 160px" },
+              minWidth: compact ? 0 : { sm: 160 },
+              p: 1.25,
+              borderRadius: 1.5,
+              border: "1px solid",
+              borderColor: "divider",
+              bgcolor: "background.paper"
+            }}
+          >
+            <Typography variant="caption" color="text.secondary" display="block" sx={{ lineHeight: 1.3 }}>
+              {item.label}
+            </Typography>
+            <Typography variant="body2" fontWeight={800} sx={{ color: item.color, mt: 0.25, lineHeight: 1.35, wordBreak: "break-word" }}>
+              {item.value}
+            </Typography>
+            {item.key === "quality" && item.tier ? (
+              <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.2, textTransform: "capitalize", lineHeight: 1.35 }}>
+                Tier: {item.tier}
+              </Typography>
+            ) : null}
+            {item.key === "eligibility" && !match.eligible && blockers.length > 0 ? (
+              <Stack spacing={0.25} sx={{ mt: 0.5 }}>
+                {blockers.map((blocker) => (
+                  <Typography key={blocker} variant="caption" display="block" sx={{ lineHeight: 1.35, wordBreak: "break-word" }}>
+                    • {blocker}
+                  </Typography>
+                ))}
+              </Stack>
+            ) : null}
+          </Box>
+        </Tooltip>
+      ))}
+    </Stack>
+  );
 }
 
 function EmployeeMatchRationale({ match }) {
@@ -111,30 +202,10 @@ function EmployeeMatchCard({ match }) {
               {match.job_title || "—"}
             </Typography>
           </Box>
-          <Chip
-            size="small"
-            label={match.fit_class || "Unknown"}
-            color={fitClassChipColor(match.fit_class)}
-            sx={{ alignSelf: { xs: "flex-start", sm: "center" }, flexShrink: 0 }}
-          />
+          <Chip size="small" variant="outlined" label={match.availability ? "Available" : "Busy"} sx={{ alignSelf: { xs: "flex-start", sm: "center" } }} />
         </Stack>
 
-        <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
-          <Chip
-            size="small"
-            color={match.eligible ? "success" : "warning"}
-            label={match.eligible ? "Eligible" : match.eligibility_reason?.replace(/_/g, " ") || "Not eligible"}
-          />
-          <Chip size="small" variant="outlined" label={match.availability ? "Available" : "Busy"} />
-          {match.cv_quality_pct != null ? (
-            <Chip
-              size="small"
-              variant="outlined"
-              color={match.cv_quality_tier === "strong" ? "success" : match.cv_quality_tier === "weak" || match.cv_quality_tier === "minimal" ? "warning" : "default"}
-              label={`CV ${match.cv_quality_pct}% · ${match.cv_quality_tier || "n/a"}`}
-            />
-          ) : null}
-        </Stack>
+        <MatchStatusStrip match={match} compact />
 
         <Grid container spacing={1}>
           {metrics.map((m) => (
@@ -902,66 +973,46 @@ export default function ManagerDashboard() {
                       </Stack>
                     </Box>
 
-                    <TableContainer sx={{ display: { xs: "none", lg: "block" } }}>
-                      <Table size="small">
+                    <TableContainer sx={{ display: { xs: "none", lg: "block" }, overflowX: "auto" }}>
+                      <Table size="small" sx={{ minWidth: 980 }}>
                         <TableHead>
                           <TableRow>
-                            <TableCell>Employee</TableCell>
-                            <TableCell>Job Title</TableCell>
-                            <TableCell>Fit Class</TableCell>
+                            <TableCell sx={{ minWidth: 140 }}>Employee</TableCell>
+                            <TableCell sx={{ minWidth: 120 }}>Job Title</TableCell>
                             <TableCell align="right">Overall</TableCell>
                             <TableCell align="right">Skill</TableCell>
                             <TableCell align="right">CV Evidence</TableCell>
                             <TableCell align="right">Semantic</TableCell>
-                            <TableCell>CV Quality</TableCell>
                             <TableCell align="right">Title</TableCell>
                             <TableCell align="right">Experience</TableCell>
                             <TableCell align="right">Gap</TableCell>
                             <TableCell>Availability</TableCell>
-                            <TableCell>Eligibility</TableCell>
                           </TableRow>
                         </TableHead>
                         <TableBody>
                           {matches.map((m) => (
                             <React.Fragment key={m.employee_id}>
                               <TableRow hover>
-                                <TableCell sx={{ fontWeight: 700 }}>{m.employee}</TableCell>
-                                <TableCell>{m.job_title}</TableCell>
-                                <TableCell>
-                                  <Chip size="small" label={m.fit_class || "Unknown"} color={fitClassChipColor(m.fit_class)} />
+                                <TableCell sx={{ fontWeight: 700, verticalAlign: "top" }}>{m.employee}</TableCell>
+                                <TableCell sx={{ verticalAlign: "top", wordBreak: "break-word" }}>{m.job_title}</TableCell>
+                                <TableCell align="right" sx={{ verticalAlign: "top", whiteSpace: "nowrap" }}>{m.match_pct}%</TableCell>
+                                <TableCell align="right" sx={{ verticalAlign: "top", whiteSpace: "nowrap" }}>{m.skill_match_pct}%</TableCell>
+                                <TableCell align="right" sx={{ verticalAlign: "top", whiteSpace: "nowrap" }}>{m.cv_score}%</TableCell>
+                                <TableCell align="right" sx={{ verticalAlign: "top", whiteSpace: "nowrap" }}>
+                                  {m.cv_semantic_pct != null ? `${m.cv_semantic_pct}%` : "—"}
                                 </TableCell>
-                                <TableCell align="right">{m.match_pct}%</TableCell>
-                                <TableCell align="right">{m.skill_match_pct}%</TableCell>
-                                <TableCell align="right">{m.cv_score}%</TableCell>
-                                <TableCell align="right">{m.cv_semantic_pct != null ? `${m.cv_semantic_pct}%` : "—"}</TableCell>
-                                <TableCell>
-                                  {m.cv_quality_pct != null ? (
-                                    <Chip
-                                      size="small"
-                                      variant="outlined"
-                                      label={`${m.cv_quality_pct}% · ${m.cv_quality_tier || "n/a"}`}
-                                      color={m.cv_quality_tier === "strong" ? "success" : m.cv_quality_tier === "weak" || m.cv_quality_tier === "minimal" ? "warning" : "default"}
-                                    />
-                                  ) : (
-                                    "—"
-                                  )}
-                                </TableCell>
-                                <TableCell align="right">{m.title_match_pct}%</TableCell>
-                                <TableCell align="right">{m.experience_score}%</TableCell>
-                                <TableCell align="right">{m.gap}</TableCell>
-                                <TableCell>{m.availability ? "Available" : "Busy"}</TableCell>
-                                <TableCell>
-                                  <Chip
-                                    size="small"
-                                    color={m.eligible ? "success" : "warning"}
-                                    label={m.eligible ? "Eligible" : m.eligibility_reason?.replace(/_/g, " ") || "Not eligible"}
-                                  />
-                                </TableCell>
+                                <TableCell align="right" sx={{ verticalAlign: "top", whiteSpace: "nowrap" }}>{m.title_match_pct}%</TableCell>
+                                <TableCell align="right" sx={{ verticalAlign: "top", whiteSpace: "nowrap" }}>{m.experience_score}%</TableCell>
+                                <TableCell align="right" sx={{ verticalAlign: "top", whiteSpace: "nowrap" }}>{m.gap}</TableCell>
+                                <TableCell sx={{ verticalAlign: "top", whiteSpace: "nowrap" }}>{m.availability ? "Available" : "Busy"}</TableCell>
                               </TableRow>
                               <TableRow>
-                                <TableCell colSpan={13} sx={{ py: 0, borderBottom: "1px solid", borderColor: "divider" }}>
+                                <TableCell colSpan={10} sx={{ py: 0, borderBottom: "1px solid", borderColor: "divider" }}>
                                   <Box sx={{ py: 1.5, mb: 1 }}>
-                                    <EmployeeMatchRationale match={m} />
+                                    <MatchStatusStrip match={m} />
+                                    <Box sx={{ mt: 1.25 }}>
+                                      <EmployeeMatchRationale match={m} />
+                                    </Box>
                                   </Box>
                                 </TableCell>
                               </TableRow>
