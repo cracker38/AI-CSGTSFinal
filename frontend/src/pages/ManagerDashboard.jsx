@@ -24,11 +24,15 @@ import {
   Tooltip,
   Typography
 } from "@mui/material";
-import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip as ChartTooltip, XAxis, YAxis } from "recharts";
 import { useSearchParams } from "react-router-dom";
 import AppShell from "../components/AppShell";
 import { api } from "../api/client";
 import { getApiErrorMessage } from "../utils/apiError";
+
+const PROJECT_SKILL_LEVELS = [1, 2, 3, 4, 5];
+const PROJECT_SKILL_WEIGHTS = [0.5, 1, 1.5, 2, 2.5, 3];
+const PROJECT_EMPLOYEE_COUNTS = Array.from({ length: 20 }, (_, i) => i + 1);
 
 const SECTIONS = [
   { key: "home", label: "Home overview" },
@@ -141,8 +145,152 @@ function MatchStatusStrip({ match, compact = false }) {
   );
 }
 
+function CvRegistrationIntelStrip({ match }) {
+  const intel = match.cv_intel || {};
+  const regAlign = intel.role_context_alignment || {};
+
+  return (
+    <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap sx={{ mt: 1 }}>
+      <Chip size="small" variant="outlined" label={`Pipeline: ${intel.pipeline || "—"}`} />
+      <Chip
+        size="small"
+        variant="outlined"
+        label={
+          intel.parser_confidence_pct != null
+            ? `Registration NLP ${intel.parser_confidence_pct}%`
+            : "Registration NLP —"
+        }
+      />
+      <Chip
+        size="small"
+        color={intel.primary_skill_validated === false ? "warning" : "success"}
+        label={
+          intel.primary_skill_validated === undefined
+            ? "Primary skill unchecked"
+            : intel.primary_skill_validated
+              ? "Primary skill in CV"
+              : "Primary not in CV"
+        }
+      />
+      {regAlign.weighted_role_alignment_pct != null ? (
+        <Chip
+          size="small"
+          variant="outlined"
+          label={`HR role alignment ${regAlign.weighted_role_alignment_pct}%`}
+        />
+      ) : null}
+      {match.project_alignment_pct != null ? (
+        <Chip size="small" variant="outlined" color="primary" label={`Project skills ${match.project_alignment_pct}%`} />
+      ) : null}
+    </Stack>
+  );
+}
+
+function ProjectSkillBreakdownTable({ rows }) {
+  if (!rows?.length) return null;
+  return (
+    <TableContainer sx={{ mt: 1.25, maxWidth: "100%" }}>
+      <Table size="small">
+        <TableHead>
+          <TableRow>
+            <TableCell>Skill</TableCell>
+            <TableCell align="right">Required</TableCell>
+            <TableCell align="right">Inventory</TableCell>
+            <TableCell align="right">CV</TableCell>
+            <TableCell align="right">Gap</TableCell>
+            <TableCell>Evidence</TableCell>
+          </TableRow>
+        </TableHead>
+        <TableBody>
+          {rows.map((row) => (
+            <TableRow key={row.skill}>
+              <TableCell sx={{ fontWeight: 600 }}>{row.skill}</TableCell>
+              <TableCell align="right">{row.required_level}</TableCell>
+              <TableCell align="right">{row.inventory_level}</TableCell>
+              <TableCell align="right">{row.cv_level}</TableCell>
+              <TableCell align="right">
+                <Typography
+                  variant="body2"
+                  color={row.gap > 0 ? "warning.main" : "success.main"}
+                  fontWeight={row.gap > 0 ? 700 : 400}
+                >
+                  {row.gap}
+                </Typography>
+              </TableCell>
+              <TableCell>
+                {row.cv_evidence ? (
+                  <Chip
+                    size="small"
+                    color={row.in_experience ? "success" : "default"}
+                    label={row.in_experience ? "CV · experience" : "CV"}
+                  />
+                ) : (
+                  <Chip size="small" variant="outlined" label="No CV hit" />
+                )}
+              </TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    </TableContainer>
+  );
+}
+
+function ProjectMatchingBriefing({ report }) {
+  if (!report?.project) return null;
+  const { project, analysis_profile, summary } = report;
+  return (
+    <Paper variant="outlined" sx={{ p: 2, mb: 2, borderRadius: 2, bgcolor: "background.default" }}>
+      <Stack spacing={1.5}>
+        <Box>
+          <Typography variant="overline" color="text.secondary">
+            Project matching profile
+          </Typography>
+          <Typography variant="h6" fontWeight={800}>
+            {project.name}
+          </Typography>
+          <Typography variant="body2" color="text.secondary">
+            Same CV intelligence pipeline as employee registration — scored against this project&apos;s department,
+            job titles, and weighted skill requirements.
+          </Typography>
+        </Box>
+        <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+          <Chip size="small" label={`Department: ${project.department || "—"}`} />
+          <Chip size="small" label={`Job title: ${(project.required_job_titles || []).join(", ") || "—"}`} />
+          <Chip size="small" label={`Headcount: ${project.required_employees}`} />
+          <Chip size="small" variant="outlined" label={`Engine: ${analysis_profile?.engine || "—"}`} />
+        </Stack>
+        {(project.skill_requirements || []).length > 0 ? (
+          <Box>
+            <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 0.75 }}>
+              Weighted skill requirements
+            </Typography>
+            <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
+              {project.skill_requirements.map((s) => (
+                <Chip
+                  key={s.skill}
+                  size="small"
+                  variant="outlined"
+                  label={`${s.skill} · L${s.required_level} · W${s.weight}`}
+                />
+              ))}
+            </Stack>
+          </Box>
+        ) : null}
+        {summary ? (
+          <Typography variant="caption" color="text.secondary">
+            Ranked {summary.candidates_ranked} team member(s) · {summary.eligible_count} eligible · best match{" "}
+            {summary.best_match_pct}%
+          </Typography>
+        ) : null}
+      </Stack>
+    </Paper>
+  );
+}
+
 function EmployeeMatchRationale({ match }) {
-  const highlights = match.highlights || [];
+  const bullets = match.analysis_bullets?.length ? match.analysis_bullets : match.highlights || [];
+  const missing = match.project_context?.missing_priority_skills || [];
 
   return (
     <Box
@@ -155,20 +303,33 @@ function EmployeeMatchRationale({ match }) {
       }}
     >
       <Typography variant="overline" color="text.secondary" sx={{ lineHeight: 1.4 }}>
-        AI rationale
+        Professional match analysis
       </Typography>
       <Typography variant="body2" fontWeight={700} sx={{ mt: 0.35, lineHeight: 1.55 }}>
         {match.recommendation || "No recommendation generated."}
       </Typography>
-      {highlights.length > 0 ? (
+      {bullets.length > 0 ? (
         <Stack component="ul" spacing={0.4} sx={{ m: 0, mt: 0.85, pl: 2.25 }}>
-          {highlights.map((item, idx) => (
+          {bullets.map((item, idx) => (
             <Typography component="li" variant="body2" key={`${item}-${idx}`} sx={{ lineHeight: 1.65, wordBreak: "break-word" }}>
               {item}
             </Typography>
           ))}
         </Stack>
       ) : null}
+      {missing.length > 0 ? (
+        <Box sx={{ mt: 1.25 }}>
+          <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 0.5 }}>
+            Priority project skill gaps (CV / inventory)
+          </Typography>
+          <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
+            {missing.slice(0, 8).map((s) => (
+              <Chip key={s} size="small" color="warning" variant="outlined" label={s} />
+            ))}
+          </Stack>
+        </Box>
+      ) : null}
+      <ProjectSkillBreakdownTable rows={match.skill_breakdown} />
       {!match.eligible && match.eligibility_reason ? (
         <Typography variant="caption" color="warning.main" display="block" sx={{ mt: 0.85 }}>
           Blockers: {String(match.eligibility_reason).replace(/_/g, " ")}
@@ -181,11 +342,11 @@ function EmployeeMatchRationale({ match }) {
 function EmployeeMatchCard({ match }) {
   const metrics = [
     { label: "Overall", value: `${match.match_pct}%` },
-    { label: "Skill fit", value: `${match.skill_match_pct}%` },
+    { label: "Project skills", value: match.project_alignment_pct != null ? `${match.project_alignment_pct}%` : "—" },
+    { label: "Skill inventory", value: `${match.skill_match_pct}%` },
     { label: "CV evidence", value: `${match.cv_score}%` },
     { label: "CV semantic", value: match.cv_semantic_pct != null ? `${match.cv_semantic_pct}%` : "—" },
     { label: "Title fit", value: `${match.title_match_pct}%` },
-    { label: "Experience", value: `${match.experience_score}%` },
     { label: "Gap", value: match.gap ?? "—" },
     { label: "Workload", value: `${match.workload_pct ?? (match.availability ? "<100" : "100")}%` }
   ];
@@ -199,13 +360,20 @@ function EmployeeMatchCard({ match }) {
               {match.employee}
             </Typography>
             <Typography variant="body2" color="text.secondary">
-              {match.job_title || "—"}
+              {match.job_title || "—"} · {match.department || "—"}
+            </Typography>
+            <Typography variant="caption" color="text.secondary" display="block">
+              Primary: {match.primary_skill || "—"} · {match.experience_level || "—"}
             </Typography>
           </Box>
-          <Chip size="small" variant="outlined" label={match.availability ? "Available" : "Busy"} sx={{ alignSelf: { xs: "flex-start", sm: "center" } }} />
+          <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap sx={{ alignSelf: { xs: "flex-start", sm: "center" } }}>
+            <Chip size="small" color={match.department_match ? "success" : "warning"} variant="outlined" label={match.department_match ? "Dept OK" : "Dept mismatch"} />
+            <Chip size="small" variant="outlined" label={match.availability ? "Available" : "Busy"} />
+          </Stack>
         </Stack>
 
         <MatchStatusStrip match={match} compact />
+        <CvRegistrationIntelStrip match={match} />
 
         <Grid container spacing={1}>
           {metrics.map((m) => (
@@ -249,8 +417,10 @@ export default function ManagerDashboard() {
   const [gaps, setGaps] = useState([]);
   const [projects, setProjects] = useState([]);
   const [allSkills, setAllSkills] = useState([]);
+  const [allDepartments, setAllDepartments] = useState([]);
   const [allJobTitles, setAllJobTitles] = useState([]);
   const [matches, setMatches] = useState([]);
+  const [matchReport, setMatchReport] = useState(null);
   const [matchingLoading, setMatchingLoading] = useState(false);
   const [hasRunMatching, setHasRunMatching] = useState(false);
   const [workload, setWorkload] = useState([]);
@@ -270,12 +440,13 @@ export default function ManagerDashboard() {
   const [showArchivedProjects, setShowArchivedProjects] = useState(false);
   const [projectForm, setProjectForm] = useState({
     name: "",
+    department: "",
+    job_title: "",
     description: "",
     deadline: "",
     required_employees: 1,
     status: "draft",
-    requirements: [{ skill_id: "", required_level: 3, weight: 1 }],
-    required_job_titles: []
+    requirements: [{ skill_id: "", required_level: 3, weight: 1 }]
   });
   const [projectFormError, setProjectFormError] = useState("");
 
@@ -290,7 +461,7 @@ export default function ManagerDashboard() {
         gapRes,
         projectRes,
         skillListRes,
-        jobTitleRes,
+        departmentsRes,
         workloadRes,
         performanceRes,
         alertsRes,
@@ -302,7 +473,7 @@ export default function ManagerDashboard() {
         api.get("/manager/skills/gaps"),
         api.get("/manager/projects"),
         api.get("/manager/skills"),
-        api.get("/manager/job-titles"),
+        api.get("/manager/departments"),
         api.get("/manager/workload"),
         api.get("/manager/performance"),
         api.get("/manager/alerts"),
@@ -314,7 +485,7 @@ export default function ManagerDashboard() {
       setGaps(gapRes.data);
       setProjects(projectRes.data);
       setAllSkills(skillListRes.data);
-      setAllJobTitles(jobTitleRes.data || []);
+      setAllDepartments(departmentsRes.data || []);
       setWorkload(workloadRes.data);
       setPerformance(performanceRes.data);
       setAlerts(alertsRes.data);
@@ -329,6 +500,25 @@ export default function ManagerDashboard() {
   useEffect(() => {
     load();
   }, [activeSection]);
+
+  useEffect(() => {
+    if (!projectForm.department) {
+      setAllJobTitles([]);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await api.get("/manager/job-titles", { params: { department: projectForm.department } });
+        if (!cancelled) setAllJobTitles(res.data || []);
+      } catch {
+        if (!cancelled) setAllJobTitles([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [projectForm.department]);
 
   useEffect(() => {
     const section = searchParams.get("section");
@@ -357,17 +547,18 @@ export default function ManagerDashboard() {
             required_level: Number(r.required_level),
             weight: Number(r.weight)
           })),
-        required_job_titles: projectForm.required_job_titles
+        required_job_titles: projectForm.job_title ? [projectForm.job_title] : []
       });
       await load();
       setProjectForm({
         name: "",
+        department: "",
+        job_title: "",
         description: "",
         deadline: "",
         required_employees: 1,
         status: "draft",
-        requirements: [{ skill_id: "", required_level: 3, weight: 1 }],
-        required_job_titles: []
+        requirements: [{ skill_id: "", required_level: 3, weight: 1 }]
       });
     } catch (err) {
       setError(err?.response?.data?.detail || "Project creation failed");
@@ -378,12 +569,20 @@ export default function ManagerDashboard() {
 
   function validateProjectForm() {
     if (!projectForm.name.trim()) return "Project name is required.";
-    if (!projectForm.required_job_titles.length) return "Select at least one required job title.";
+    if (!projectForm.department) return "Select a department for this project.";
+    if (!projectForm.job_title) return "Select a job title for this project.";
     const hasSkillRequirement = projectForm.requirements.some((r) => r.skill_id);
     if (!hasSkillRequirement) return "Select at least one required skill.";
     const requiredEmployees = Number(projectForm.required_employees);
-    if (!Number.isFinite(requiredEmployees) || requiredEmployees < 1) {
-      return "Employees needed must be at least 1.";
+    if (!PROJECT_EMPLOYEE_COUNTS.includes(requiredEmployees)) {
+      return "Select how many employees are needed.";
+    }
+    for (const req of projectForm.requirements) {
+      if (!req.skill_id) continue;
+      const level = Number(req.required_level);
+      const weight = Number(req.weight);
+      if (!PROJECT_SKILL_LEVELS.includes(level)) return "Select a skill level (1–5).";
+      if (!PROJECT_SKILL_WEIGHTS.includes(weight)) return "Select a skill weight.";
     }
     return "";
   }
@@ -397,7 +596,14 @@ export default function ManagerDashboard() {
     setMatchingLoading(true);
     try {
       const res = await api.get(`/manager/projects/${selectedProjectId}/match`);
-      setMatches(res.data);
+      const payload = res.data;
+      if (Array.isArray(payload)) {
+        setMatchReport(null);
+        setMatches(payload);
+      } else {
+        setMatchReport(payload);
+        setMatches(payload.candidates || []);
+      }
       setHasRunMatching(true);
     } catch (err) {
       setError(err?.response?.data?.detail || "Failed to run matching");
@@ -573,9 +779,14 @@ export default function ManagerDashboard() {
     if (!selectedProjectId) return team;
     const project = projects.find((p) => p.id === selectedProjectId);
     if (!project) return team;
-    const requiredTitles = (project.required_job_titles || []).map(normalizeTitle);
-    if (!requiredTitles.length) return team;
-    return team.filter((member) => requiredTitles.includes(normalizeTitle(member.role)));
+    return team.filter((member) => {
+      if (project.department && normalizeTitle(member.department) !== normalizeTitle(project.department)) {
+        return false;
+      }
+      const requiredTitles = (project.required_job_titles || []).map(normalizeTitle);
+      if (!requiredTitles.length) return true;
+      return requiredTitles.includes(normalizeTitle(member.role));
+    });
   }, [team, projects, selectedProjectId]);
 
   const selectedProject = useMemo(() => {
@@ -601,6 +812,9 @@ export default function ManagerDashboard() {
 
   function getAssignmentBlockReason(member, project, allocationPct = 100) {
     if (!project) return "Select a project first.";
+    if (project.department && normalizeTitle(member.department) !== normalizeTitle(project.department)) {
+      return `Employee department (${member.department || "—"}) does not match project department (${project.department}).`;
+    }
     const requiredTitles = (project.required_job_titles || []).map(normalizeTitle);
     if (requiredTitles.length && !requiredTitles.includes(normalizeTitle(member.role))) {
       return "Employee job title does not match project required job titles.";
@@ -657,7 +871,7 @@ export default function ManagerDashboard() {
                             <CartesianGrid strokeDasharray="3 3" />
                             <XAxis dataKey="skill" />
                             <YAxis />
-                            <Tooltip />
+                            <ChartTooltip />
                             <Bar dataKey="count" fill="#1976d2" />
                           </BarChart>
                         </ResponsiveContainer>
@@ -671,7 +885,7 @@ export default function ManagerDashboard() {
                             <CartesianGrid strokeDasharray="3 3" />
                             <XAxis dataKey="name" />
                             <YAxis />
-                            <Tooltip />
+                            <ChartTooltip />
                             <Bar dataKey="workload_pct" fill="#9c27b0" />
                           </BarChart>
                         </ResponsiveContainer>
@@ -747,7 +961,7 @@ export default function ManagerDashboard() {
                         <CartesianGrid strokeDasharray="3 3" />
                         <XAxis dataKey="skill" />
                         <YAxis />
-                        <Tooltip />
+                        <ChartTooltip />
                         <Bar dataKey="coverage_pct" fill="#2e7d32" />
                       </BarChart>
                     </ResponsiveContainer>
@@ -792,32 +1006,101 @@ export default function ManagerDashboard() {
                 ) : null}
                 <Grid container spacing={1}>
                   <Grid item xs={12} md={4}><TextField size="small" fullWidth label="Project name" value={projectForm.name} onChange={(e) => setProjectForm((p) => ({ ...p, name: e.target.value }))} /></Grid>
-                  <Grid item xs={12} md={4}><TextField size="small" fullWidth label="Deadline" type="date" InputLabelProps={{ shrink: true }} value={projectForm.deadline} onChange={(e) => setProjectForm((p) => ({ ...p, deadline: e.target.value }))} /></Grid>
-                  <Grid item xs={12} md={4}><TextField size="small" fullWidth label="Employees needed" type="number" value={projectForm.required_employees} onChange={(e) => setProjectForm((p) => ({ ...p, required_employees: e.target.value }))} /></Grid>
-                  <Grid item xs={12}><TextField size="small" fullWidth label="Description" value={projectForm.description} onChange={(e) => setProjectForm((p) => ({ ...p, description: e.target.value }))} /></Grid>
-                  <Grid item xs={12}>
+                  <Grid item xs={12} md={4}>
                     <TextField
                       select
                       size="small"
                       fullWidth
-                      label="Required Job Titles"
-                      value={projectForm.required_job_titles}
-                      SelectProps={{ multiple: true }}
+                      label="Department"
+                      value={projectForm.department}
                       onChange={(e) => {
-                        const value = e.target.value;
-                        setProjectForm((p) => ({ ...p, required_job_titles: Array.isArray(value) ? value : [value] }));
+                        const department = e.target.value;
+                        setProjectForm((p) => ({
+                          ...p,
+                          department,
+                          job_title: ""
+                        }));
                       }}
                     >
+                      <MenuItem value="">Select department</MenuItem>
+                      {allDepartments.map((dep) => <MenuItem key={dep} value={dep}>{dep}</MenuItem>)}
+                    </TextField>
+                  </Grid>
+                  <Grid item xs={12} md={4}>
+                    <TextField
+                      select
+                      size="small"
+                      fullWidth
+                      label="Job title"
+                      value={projectForm.job_title}
+                      disabled={!projectForm.department}
+                      helperText={!projectForm.department ? "Select a department first" : ""}
+                      onChange={(e) => setProjectForm((p) => ({ ...p, job_title: e.target.value }))}
+                    >
+                      <MenuItem value="">Select job title</MenuItem>
                       {allJobTitles.map((jt) => <MenuItem key={jt} value={jt}>{jt}</MenuItem>)}
                     </TextField>
                   </Grid>
-                  <Grid item xs={12} md={5}>
+                  <Grid item xs={12} md={4}><TextField size="small" fullWidth label="Deadline" type="date" InputLabelProps={{ shrink: true }} value={projectForm.deadline} onChange={(e) => setProjectForm((p) => ({ ...p, deadline: e.target.value }))} /></Grid>
+                  <Grid item xs={12}><TextField size="small" fullWidth label="Description" value={projectForm.description} onChange={(e) => setProjectForm((p) => ({ ...p, description: e.target.value }))} /></Grid>
+                  <Grid item xs={12} md={4}>
                     <TextField select size="small" fullWidth label="Required skill" value={projectForm.requirements[0].skill_id} onChange={(e) => setProjectForm((p) => ({ ...p, requirements: [{ ...p.requirements[0], skill_id: e.target.value }] }))}>
+                      <MenuItem value="">Select skill</MenuItem>
                       {allSkills.map((s) => <MenuItem key={s.id} value={s.id}>{s.name}</MenuItem>)}
                     </TextField>
                   </Grid>
-                  <Grid item xs={6} md={3}><TextField size="small" fullWidth label="Level (1-5)" type="number" value={projectForm.requirements[0].required_level} onChange={(e) => setProjectForm((p) => ({ ...p, requirements: [{ ...p.requirements[0], required_level: e.target.value }] }))} /></Grid>
-                  <Grid item xs={6} md={2}><TextField size="small" fullWidth label="Weight" type="number" value={projectForm.requirements[0].weight} onChange={(e) => setProjectForm((p) => ({ ...p, requirements: [{ ...p.requirements[0], weight: e.target.value }] }))} /></Grid>
+                  <Grid item xs={6} md={2}>
+                    <TextField
+                      select
+                      size="small"
+                      fullWidth
+                      label="Level"
+                      value={projectForm.requirements[0].required_level}
+                      onChange={(e) =>
+                        setProjectForm((p) => ({
+                          ...p,
+                          requirements: [{ ...p.requirements[0], required_level: Number(e.target.value) }]
+                        }))
+                      }
+                    >
+                      {PROJECT_SKILL_LEVELS.map((level) => (
+                        <MenuItem key={level} value={level}>{level}</MenuItem>
+                      ))}
+                    </TextField>
+                  </Grid>
+                  <Grid item xs={6} md={2}>
+                    <TextField
+                      select
+                      size="small"
+                      fullWidth
+                      label="Weight"
+                      value={projectForm.requirements[0].weight}
+                      onChange={(e) =>
+                        setProjectForm((p) => ({
+                          ...p,
+                          requirements: [{ ...p.requirements[0], weight: Number(e.target.value) }]
+                        }))
+                      }
+                    >
+                      {PROJECT_SKILL_WEIGHTS.map((w) => (
+                        <MenuItem key={w} value={w}>{w}</MenuItem>
+                      ))}
+                    </TextField>
+                  </Grid>
+                  <Grid item xs={6} md={2}>
+                    <TextField
+                      select
+                      size="small"
+                      fullWidth
+                      label="Employees needed"
+                      value={projectForm.required_employees}
+                      onChange={(e) => setProjectForm((p) => ({ ...p, required_employees: Number(e.target.value) }))}
+                    >
+                      {PROJECT_EMPLOYEE_COUNTS.map((n) => (
+                        <MenuItem key={n} value={n}>{n}</MenuItem>
+                      ))}
+                    </TextField>
+                  </Grid>
                   <Grid item xs={12} md={2}>
                     <Button fullWidth variant="contained" disabled={saving} onClick={createProject}>
                       Create
@@ -880,11 +1163,12 @@ export default function ManagerDashboard() {
                 </TableContainer>
                 <Divider sx={{ my: 2 }} />
                 <TableContainer><Table size="small"><TableHead><TableRow>
-                  <TableCell>Project</TableCell><TableCell>Status</TableCell><TableCell>Required Job Titles</TableCell><TableCell>Deadline</TableCell><TableCell>Assigned</TableCell><TableCell align="right">Action</TableCell>
+                  <TableCell>Project</TableCell><TableCell>Department</TableCell><TableCell>Status</TableCell><TableCell>Job title</TableCell><TableCell>Deadline</TableCell><TableCell>Assigned</TableCell><TableCell align="right">Action</TableCell>
                 </TableRow></TableHead><TableBody>
                   {projects.map((p) => (
                     <TableRow key={p.id}>
                       <TableCell>{p.name}</TableCell>
+                      <TableCell>{p.department || "-"}</TableCell>
                       <TableCell>{p.status}</TableCell>
                       <TableCell>{(p.required_job_titles || []).join(", ") || "-"}</TableCell>
                       <TableCell>{p.deadline || "-"}</TableCell>
@@ -915,10 +1199,12 @@ export default function ManagerDashboard() {
               <Card variant="outlined"><CardContent>
                 <Typography variant="h6" fontWeight={800}>AI employee matching</Typography>
                 <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-                  Ranks your team using full CV text (TF–IDF project similarity), per-skill CV evidence confidence,
-                  experience-section detection, and skill inventory — not a simple keyword list.
+                  Professional workforce fit analysis: reuses registration CV NLP (taxonomy parser, role-context
+                  alignment, primary-skill validation) and scores each team member against the selected project&apos;s
+                  department, job title, and weighted skill requirements.
                 </Typography>
                 <Divider sx={{ my: 2 }} />
+                {matchReport ? <ProjectMatchingBriefing report={matchReport} /> : null}
                 {team.length === 0 ? (
                   <Alert severity="warning" sx={{ mb: 2 }}>
                     No employees are assigned to your team yet. Matching runs only against your approved team members.
@@ -940,6 +1226,7 @@ export default function ManagerDashboard() {
                       setSelectedProjectId(e.target.value);
                       setHasRunMatching(false);
                       setMatches([]);
+                      setMatchReport(null);
                     }}
                     sx={{ minWidth: 260 }}
                   >
@@ -960,7 +1247,7 @@ export default function ManagerDashboard() {
                 ) : null}
                 {hasRunMatching && matches.length > 0 && matches.every((m) => !m.eligible) ? (
                   <Alert severity="warning" sx={{ mb: 2 }}>
-                    Candidates were found, but none are currently eligible for assignment. Review job titles or workload.
+                    Candidates were found, but none are currently eligible for assignment. Review department, job titles, or workload.
                   </Alert>
                 ) : null}
                 {hasRunMatching && matches.length > 0 ? (
@@ -980,7 +1267,8 @@ export default function ManagerDashboard() {
                             <TableCell sx={{ minWidth: 140 }}>Employee</TableCell>
                             <TableCell sx={{ minWidth: 120 }}>Job Title</TableCell>
                             <TableCell align="right">Overall</TableCell>
-                            <TableCell align="right">Skill</TableCell>
+                            <TableCell align="right">Project</TableCell>
+                            <TableCell align="right">Inventory</TableCell>
                             <TableCell align="right">CV Evidence</TableCell>
                             <TableCell align="right">Semantic</TableCell>
                             <TableCell align="right">Title</TableCell>
@@ -996,6 +1284,9 @@ export default function ManagerDashboard() {
                                 <TableCell sx={{ fontWeight: 700, verticalAlign: "top" }}>{m.employee}</TableCell>
                                 <TableCell sx={{ verticalAlign: "top", wordBreak: "break-word" }}>{m.job_title}</TableCell>
                                 <TableCell align="right" sx={{ verticalAlign: "top", whiteSpace: "nowrap" }}>{m.match_pct}%</TableCell>
+                                <TableCell align="right" sx={{ verticalAlign: "top", whiteSpace: "nowrap" }}>
+                                  {m.project_alignment_pct != null ? `${m.project_alignment_pct}%` : "—"}
+                                </TableCell>
                                 <TableCell align="right" sx={{ verticalAlign: "top", whiteSpace: "nowrap" }}>{m.skill_match_pct}%</TableCell>
                                 <TableCell align="right" sx={{ verticalAlign: "top", whiteSpace: "nowrap" }}>{m.cv_score}%</TableCell>
                                 <TableCell align="right" sx={{ verticalAlign: "top", whiteSpace: "nowrap" }}>
@@ -1007,9 +1298,10 @@ export default function ManagerDashboard() {
                                 <TableCell sx={{ verticalAlign: "top", whiteSpace: "nowrap" }}>{m.availability ? "Available" : "Busy"}</TableCell>
                               </TableRow>
                               <TableRow>
-                                <TableCell colSpan={10} sx={{ py: 0, borderBottom: "1px solid", borderColor: "divider" }}>
+                                <TableCell colSpan={11} sx={{ py: 0, borderBottom: "1px solid", borderColor: "divider" }}>
                                   <Box sx={{ py: 1.5, mb: 1 }}>
                                     <MatchStatusStrip match={m} />
+                                    <CvRegistrationIntelStrip match={m} />
                                     <Box sx={{ mt: 1.25 }}>
                                       <EmployeeMatchRationale match={m} />
                                     </Box>
@@ -1084,7 +1376,7 @@ export default function ManagerDashboard() {
                 </Stack>
                 {selectedProjectId && eligibleTeamForSelectedProject.length === 0 ? (
                   <Alert severity="warning" sx={{ mt: 2 }}>
-                    No team members match this project's required job titles.
+                    No team members match this project's department and required job titles.
                   </Alert>
                 ) : null}
                 {selectedProjectId ? (

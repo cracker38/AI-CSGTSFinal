@@ -91,6 +91,33 @@ def ensure_master_catalogs(db: Session) -> None:
         db.commit()
 
 
+def ensure_project_department_schema(db: Session) -> None:
+    """Adds manager_projects.department and backfills from the owning manager."""
+    bind = db.get_bind()
+    inspector = inspect(bind)
+    if "manager_projects" not in inspector.get_table_names():
+        return
+    cols = {c["name"] for c in inspector.get_columns("manager_projects")}
+    if "department" not in cols:
+        with bind.connect() as conn:
+            conn.execute(text("ALTER TABLE manager_projects ADD COLUMN department VARCHAR(120) NOT NULL DEFAULT ''"))
+            conn.commit()
+    from app.models.manager_project import ManagerProject
+    from app.models.user import User
+
+    rows = (
+        db.query(ManagerProject, User.department)
+        .join(User, User.id == ManagerProject.manager_id)
+        .filter((ManagerProject.department == "") | (ManagerProject.department.is_(None)))
+        .all()
+    )
+    if not rows:
+        return
+    for project, manager_department in rows:
+        project.department = (manager_department or "").strip()
+    db.commit()
+
+
 def ensure_team_assignment_schema(db: Session) -> None:
     """
     Dev-friendly schema patching.

@@ -18,12 +18,12 @@ from app.models.manager_project import (
     ProjectSkillRequirement,
     ProjectStatus,
 )
-from app.models.master_data import JobTitleCatalog
+from app.models.master_data import DepartmentCatalog, JobTitleCatalog
 from app.models.skill import Skill
 from app.models.user import AccountStatus, User, UserRole
 from app.models.user_skill import UserSkill
 from app.services.skill_normalization import normalize_skill_name
-from app.services.job_matching import _normalize_title, match_employees_for_project
+from app.services.job_matching import _normalize_title, build_project_match_report
 from app.services.workforce_analytics import manager_employee_performance, team_weighted_gap_score
 
 router = APIRouter()
@@ -116,6 +116,7 @@ def team_members(
             "id": str(employee.id),
             "name": employee.full_name,
             "role": employee.job_title,
+            "department": employee.department,
             "skills": skills,
             "availability": availability_state,
             "workload_pct": workload,
@@ -227,17 +228,51 @@ def skills_gaps(
 class ProjectSkillInput(BaseModel):
     skill_id: uuid.UUID
     required_level: int = Field(ge=1, le=5)
-    weight: float = Field(ge=0.1, le=3.0, default=1.0)
+    weight: float = Field(gt=0, le=3.0, default=1.0)
 
 
 class ProjectCreateInput(BaseModel):
     name: str = Field(min_length=2, max_length=160)
+    department: str = Field(min_length=2, max_length=120)
     description: str = Field(default="", max_length=1000)
     deadline: date | None = None
     required_employees: int = Field(ge=1, le=100, default=1)
     status: ProjectStatus = ProjectStatus.draft
     requirements: list[ProjectSkillInput] = Field(min_length=1)
     required_job_titles: list[str] = Field(default_factory=list)
+
+
+def _active_department_names(db: Session) -> set[str]:
+    return {
+        name
+        for (name,) in db.query(DepartmentCatalog.name).filter(DepartmentCatalog.active.is_(True)).all()
+    }
+
+
+def _job_titles_for_department(db: Session, department: str) -> list[str]:
+    catalog = [
+        name
+        for (name,) in db.query(JobTitleCatalog.name)
+        .filter(JobTitleCatalog.active.is_(True))
+        .order_by(JobTitleCatalog.name.asc())
+        .all()
+    ]
+    if not department:
+        return catalog
+    dept_titles = {
+        jt
+        for (jt,) in db.query(User.job_title)
+        .filter(User.department == department, User.job_title.isnot(None), User.job_title != "")
+        .distinct()
+        .all()
+        if jt
+    }
+    if dept_titles:
+        filtered = [jt for jt in catalog if jt in dept_titles]
+        if filtered:
+            return filtered
+        return sorted(dept_titles)
+    return catalog
 
 
 @router.post("/projects")
@@ -248,7 +283,11 @@ def create_project(
 ) -> dict:
     if not payload.required_job_titles:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="At least one required job title is required")
-    active_job_titles = {
+    active_departments = _active_department_names(db)
+    if payload.department not in active_departments:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Department must be selected from the catalog")
+    allowed_job_titles = set(_job_titles_for_department(db, payload.department))
+    active_job_titles = allowed_job_titles or {
         jt for (jt,) in db.query(JobTitleCatalog.name).filter(JobTitleCatalog.active.is_(True)).all()
     }
     invalid_job_titles = [jt for jt in payload.required_job_titles if jt not in active_job_titles]
@@ -275,10 +314,17 @@ def create_project(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"No available employees for required job title(s): {', '.join(missing_titles)}",
             )
+        dept_team = [u for u in available_team if _normalize_title(u.department) == _normalize_title(payload.department)]
+        if len(dept_team) < payload.required_employees:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Not enough available employees in department '{payload.department}'",
+            )
 
     project = ManagerProject(
         manager_id=manager.id,
         name=payload.name,
+        department=payload.department,
         description=payload.description,
         deadline=payload.deadline,
         required_employees=payload.required_employees,
@@ -320,6 +366,7 @@ def list_projects(
             {
                 "id": str(p.id),
                 "name": p.name,
+                "department": p.department,
                 "description": p.description,
                 "status": p.status.value,
                 "deadline": p.deadline.isoformat() if p.deadline else None,
@@ -395,13 +442,13 @@ def match_employees(
     project_id: uuid.UUID,
     db: Session = Depends(get_db),
     manager: User = Depends(require_roles(UserRole.manager)),
-) -> list[dict]:
+) -> dict:
     project = db.query(ManagerProject).filter(ManagerProject.id == project_id, ManagerProject.manager_id == manager.id).one_or_none()
     if not project:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
     workloads = _workload_by_employee(db, manager.id)
     team = _team_query(db, manager.id).all()
-    return match_employees_for_project(db, project=project, manager=manager, team=team, workloads=workloads)
+    return build_project_match_report(db, project=project, manager=manager, team=team, workloads=workloads)
 
 
 class AssignmentInput(BaseModel):
@@ -435,6 +482,11 @@ def assign_employee(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Employee job title '{employee.job_title}' is not in project required job titles",
+        )
+    if project.department and _normalize_title(employee.department) != _normalize_title(project.department):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Employee department '{employee.department}' does not match project department '{project.department}'",
         )
     current = _workload_by_employee(db, manager.id).get(employee.id, 0.0)
     existing = (
@@ -668,11 +720,28 @@ def skills_list(
     return [{"id": str(s.id), "name": s.name} for s in rows]
 
 
-@router.get("/job-titles")
-def job_titles_list(
+@router.get("/departments")
+def departments_list(
     db: Session = Depends(get_db),
     _: User = Depends(require_roles(UserRole.manager)),
 ) -> list[str]:
     return [
-        name for (name,) in db.query(JobTitleCatalog.name).filter(JobTitleCatalog.active.is_(True)).order_by(JobTitleCatalog.name.asc()).all()
+        name
+        for (name,) in db.query(DepartmentCatalog.name)
+        .filter(DepartmentCatalog.active.is_(True))
+        .order_by(DepartmentCatalog.name.asc())
+        .all()
     ]
+
+
+@router.get("/job-titles")
+def job_titles_list(
+    department: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_roles(UserRole.manager)),
+) -> list[str]:
+    if department:
+        active_departments = _active_department_names(db)
+        if department not in active_departments:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unknown department")
+    return _job_titles_for_department(db, department or "")

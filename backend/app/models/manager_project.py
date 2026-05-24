@@ -22,6 +22,7 @@ class ManagerProject(Base, UuidPrimaryKeyMixin, TimestampedMixin):
 
     manager_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(160), nullable=False)
+    department: Mapped[str] = mapped_column(String(120), nullable=False, default="")
     description: Mapped[str] = mapped_column(String(1000), nullable=False, default="")
     deadline: Mapped[date | None] = mapped_column(Date, nullable=True)
     required_employees: Mapped[int] = mapped_column(Integer, nullable=False, default=1)

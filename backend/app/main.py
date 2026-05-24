@@ -9,7 +9,12 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.router import api_router
 from app.core.config import settings
-from app.db.init_db import ensure_default_system_admin, ensure_master_catalogs, ensure_team_assignment_schema
+from app.db.init_db import (
+    ensure_default_system_admin,
+    ensure_master_catalogs,
+    ensure_project_department_schema,
+    ensure_team_assignment_schema,
+)
 from app.db.session import SessionLocal, engine
 from app.models.base import Base
 from app.db import base as _  # noqa: F401  (import models)
@@ -60,6 +65,7 @@ def create_app() -> FastAPI:
         db = SessionLocal()
         try:
             ensure_team_assignment_schema(db)
+            ensure_project_department_schema(db)
             ensure_default_system_admin(db)
             ensure_master_catalogs(db)
         finally:

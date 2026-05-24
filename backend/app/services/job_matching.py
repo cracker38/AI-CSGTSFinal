@@ -243,6 +243,137 @@ def _employee_cv_bundle(db: Session, employee: User, profile: EmployeeProfile | 
     }
 
 
+def _registration_cv_intel(ai_profile: dict | None) -> dict:
+    ai = ai_profile if isinstance(ai_profile, dict) else {}
+    role_ctx = ai.get("role_context_alignment") if isinstance(ai.get("role_context_alignment"), dict) else {}
+    confidence = ai.get("confidence")
+    return {
+        "pipeline": ai.get("nlp_pipeline") or "taxonomy_regex_v1",
+        "parser_confidence": round(float(confidence), 3) if confidence is not None else None,
+        "parser_confidence_pct": round(float(confidence) * 100.0, 1) if confidence is not None else None,
+        "primary_skill_validated": ai.get("primary_skill_validated"),
+        "role_context_alignment": role_ctx,
+        "suggested_skills": (ai.get("suggested_skills") or [])[:12],
+    }
+
+
+def _compute_project_skill_breakdown(
+    *,
+    skill_rows: list[tuple[uuid.UUID, str, int, float]],
+    current: dict[uuid.UUID, int],
+    mention_by_skill: dict,
+    exp_span,
+    source_by_skill: dict[uuid.UUID, str],
+) -> tuple[dict, list[dict]]:
+    breakdown: list[dict] = []
+    cv_overlap: set[str] = set()
+    weighted_total = 0.0
+    weighted_hit = 0.0
+    inventory_hits = 0
+
+    for skill_id, name, required_level, weight in skill_rows:
+        canon = normalize_skill_name(name) or _normalize_title(name)
+        inventory_level = int(current.get(skill_id, 0))
+        mention = mention_by_skill.get(canon)
+        in_exp = mention_in_span(mention, exp_span) if mention else False
+        cv_level = _cv_inferred_level(mention, in_experience=in_exp)
+        if inventory_level > 0 and cv_level > 0:
+            effective = max(inventory_level, int(round(inventory_level * 0.45 + cv_level * 0.55)))
+        elif cv_level > 0:
+            effective = cv_level
+        else:
+            effective = inventory_level
+        gap = max(0, int(required_level) - effective)
+        w = float(weight)
+        weighted_total += w
+        if effective >= int(required_level):
+            weighted_hit += w
+        if mention:
+            cv_overlap.add(canon)
+        if inventory_level >= int(required_level):
+            inventory_hits += 1
+        breakdown.append(
+            {
+                "skill": canon,
+                "required_level": int(required_level),
+                "weight": w,
+                "inventory_level": inventory_level,
+                "cv_level": cv_level,
+                "effective_level": effective,
+                "gap": gap,
+                "cv_evidence": bool(mention),
+                "in_experience": in_exp,
+                "source": source_by_skill.get(skill_id, "self"),
+            }
+        )
+
+    missing_ranked = sorted(
+        [row["skill"] for row in breakdown if row["gap"] > 0],
+        key=lambda s: next((r["weight"] for r in breakdown if r["skill"] == s), 1.0),
+        reverse=True,
+    )
+    return (
+        {
+            "required_skill_count": len(skill_rows),
+            "cv_skill_overlap": len(cv_overlap),
+            "cv_skill_overlap_pct": round((len(cv_overlap) / max(1, len(skill_rows))) * 100.0, 1),
+            "inventory_coverage_pct": round((inventory_hits / max(1, len(skill_rows))) * 100.0, 1),
+            "weighted_project_alignment_pct": round((weighted_hit / max(weighted_total, 0.1)) * 100.0, 1),
+            "missing_priority_skills": missing_ranked[:10],
+        },
+        breakdown,
+    )
+
+
+def _build_match_analysis_bullets(
+    *,
+    employee: User,
+    project: ManagerProject,
+    project_context: dict,
+    cv_intel: dict,
+    department_match: bool,
+    title_score: float,
+    semantic_pct: float | None,
+    cv_bundle: dict,
+    req: ProjectRequirements,
+    cv_hits: list[dict],
+) -> list[str]:
+    bullets: list[str] = []
+    reg_align = cv_intel.get("role_context_alignment") or {}
+    if isinstance(reg_align, dict) and reg_align.get("weighted_role_alignment_pct") is not None:
+        bullets.append(
+            f"Registration HR profile alignment {reg_align['weighted_role_alignment_pct']}% "
+            f"({reg_align.get('required_skill_overlap', 0)}/{reg_align.get('required_skill_count', 0)} skills vs declared role)."
+        )
+    if project.department:
+        bullets.append(
+            f"Project department: {project.department} — employee is in "
+            f"{employee.department or 'unknown'} ({'match' if department_match else 'mismatch'})."
+        )
+    if req.required_titles:
+        titles = ", ".join(sorted(req.required_titles))
+        bullets.append(f"Required job title(s): {titles} — title fit {int(round(title_score * 100))}%.")
+    if req.has_requirements:
+        bullets.append(
+            f"Project weighted skill alignment {project_context.get('weighted_project_alignment_pct', 0)}% "
+            f"({project_context.get('cv_skill_overlap', 0)}/{project_context.get('required_skill_count', 0)} skills evidenced in CV)."
+        )
+    if semantic_pct is not None:
+        bullets.append(f"Résumé semantic similarity to project brief: {semantic_pct:.0f}% (TF–IDF).")
+    if cv_intel.get("parser_confidence_pct") is not None:
+        bullets.append(f"Registration NLP parser confidence: {cv_intel['parser_confidence_pct']:.0f}%.")
+    if cv_intel.get("primary_skill_validated") is True:
+        bullets.append("Declared primary skill is validated in uploaded CV text.")
+    elif cv_intel.get("primary_skill_validated") is False:
+        bullets.append("Declared primary skill was not found verbatim in CV — verify during interview.")
+    if req.has_requirements:
+        evidenced = sum(1 for h in cv_hits if h.get("cv_confidence", 0) > 0)
+        bullets.append(f"{evidenced}/{len(req.skill_rows)} required project skills substantiated in CV NLP pass.")
+    if cv_bundle.get("quality_tier"):
+        bullets.append(f"CV structure tier: {cv_bundle['quality_tier']} ({cv_bundle.get('quality_score', 0):.0f}% quality score).")
+    return bullets[:8]
+
+
 def _score_cv_skill_evidence(
     req: ProjectRequirements,
     cv_bundle: dict,
@@ -300,7 +431,11 @@ def match_employees_for_project(
         cv_extract = cv_bundle["cv_extract"]
 
         title_score = title_match_score(employee.job_title, req.normalized_titles)
-        department_match = _normalize_title(employee.department) == _normalize_title(manager.department)
+        project_department = (project.department or "").strip() or (manager.department or "")
+        department_match = (
+            not project_department
+            or _normalize_title(employee.department) == _normalize_title(project_department)
+        )
 
         skill_rows = (
             db.query(UserSkill.skill_id, UserSkill.level, UserSkill.source)
@@ -314,6 +449,16 @@ def match_employees_for_project(
 
         mention_by_skill = cv_bundle["mention_by_skill"]
         exp_span = cv_bundle["exp_span"]
+        ai_profile = (profile.ai_profile if profile and isinstance(profile.ai_profile, dict) else {}) or {}
+        cv_intel = _registration_cv_intel(ai_profile)
+        project_context, skill_breakdown = _compute_project_skill_breakdown(
+            skill_rows=req.skill_rows,
+            current=current,
+            mention_by_skill=mention_by_skill,
+            exp_span=exp_span,
+            source_by_skill=source_by_skill,
+        )
+        project_alignment_pct = float(project_context.get("weighted_project_alignment_pct") or 0.0)
         weighted_inventory = 0.0
         total_gap = 0.0
         critical_skill_missing = False
@@ -409,11 +554,12 @@ def match_employees_for_project(
         cv_component = cv_evidence_score
 
         score = (
-            (skill_score / 100.0) * 0.28
-            + (cv_component / 100.0) * 0.27
-            + (semantic_component / 100.0) * 0.22
-            + (quality_component / 100.0) * 0.08
-            + experience_score * 0.07
+            (skill_score / 100.0) * 0.26
+            + (cv_component / 100.0) * 0.25
+            + (semantic_component / 100.0) * 0.20
+            + (project_alignment_pct / 100.0) * 0.08
+            + (quality_component / 100.0) * 0.07
+            + experience_score * 0.06
             + (title_score) * 0.04
             + availability_score * 0.02
             + performance_score * 0.01
@@ -429,7 +575,7 @@ def match_employees_for_project(
         score = score * (0.82 + min(0.18, avg_mention_conf * 0.18 + cv_bundle["doc_confidence"] * 0.12))
 
         hard_rule_flags: list[str] = []
-        if not department_match:
+        if project_department and not department_match:
             hard_rule_flags.append("department_mismatch")
         if req.normalized_titles and _normalize_title(employee.job_title) not in req.normalized_titles:
             hard_rule_flags.append("job_title_mismatch")
@@ -445,13 +591,34 @@ def match_employees_for_project(
         raw_match_pct = round(max(0.0, min(100.0, score)), 1)
         eligible = len(hard_rule_flags) == 0
 
-        recommendation = "Ready for assignment"
+        analysis_bullets = _build_match_analysis_bullets(
+            employee=employee,
+            project=project,
+            project_context=project_context,
+            cv_intel=cv_intel,
+            department_match=department_match,
+            title_score=title_score,
+            semantic_pct=semantic_pct,
+            cv_bundle=cv_bundle,
+            req=req,
+            cv_hits=cv_hits,
+        )
+
+        recommendation = f"Recommended for {project.name}: strong project–CV alignment and eligible for assignment."
         if hard_rule_flags:
-            recommendation = "Blocked by hard rules — review CV depth, title, or workload"
+            recommendation = (
+                f"Not recommended for {project.name} until blockers are resolved "
+                f"({', '.join(h.replace('_', ' ') for h in hard_rule_flags)})."
+            )
         elif total_gap > 0:
-            recommendation = "Assignable with mentoring/training support"
+            recommendation = (
+                f"Conditionally recommended for {project.name}: core fit present; "
+                f"address {int(total_gap)} weighted skill gap point(s) via mentoring or training."
+            )
         elif cv_bundle["quality_tier"] == "weak":
-            recommendation = "Skills align but CV evidence is thin — validate in interview"
+            recommendation = (
+                f"Proceed with caution on {project.name}: inventory aligns but CV evidence is thin — validate in interview."
+            )
 
         fit_class = "Reject"
         if raw_match_pct >= 85:
@@ -477,6 +644,8 @@ def match_employees_for_project(
                 highlights.append(f"{int(exp_skill_ratio * 100)}% of required skills appear in experience section")
         if avg_mention_conf > 0:
             highlights.append(f"Avg CV skill confidence {avg_mention_conf * 100:.0f}%")
+        if project_alignment_pct > 0:
+            highlights.append(f"Project weighted skill alignment {project_alignment_pct:.0f}%")
 
         matches.append(
             {
@@ -484,11 +653,15 @@ def match_employees_for_project(
                 "employee": employee.full_name,
                 "match_pct": raw_match_pct,
                 "skill_match_pct": round(skill_score, 1),
+                "project_alignment_pct": round(project_alignment_pct, 1),
                 "title_match_pct": round(title_score * 100, 1),
                 "gap": round(total_gap, 2),
                 "availability": workload < 100,
                 "workload_pct": round(workload, 1),
                 "job_title": employee.job_title,
+                "department": employee.department,
+                "primary_skill": employee.primary_skill,
+                "experience_level": employee.experience_level,
                 "eligible": eligible,
                 "eligibility_reason": ", ".join(hard_rule_flags) if hard_rule_flags else None,
                 "recommendation": recommendation,
@@ -510,8 +683,66 @@ def match_employees_for_project(
                 "primary_skill_match": primary_skill_match,
                 "cv_skill_hits": cv_hits[:8],
                 "highlights": highlights[:5],
-                "engine": "cv_nlp_tfidf_v2",
+                "analysis_bullets": analysis_bullets,
+                "cv_intel": cv_intel,
+                "project_context": {
+                    **project_context,
+                    "project_department": project_department,
+                    "required_job_titles": sorted(req.required_titles),
+                },
+                "skill_breakdown": skill_breakdown,
+                "engine": "registration_cv_nlp_project_v3",
             }
         )
 
     return sorted(matches, key=lambda x: (x["eligible"], x["match_pct"]), reverse=True)
+
+
+def build_project_match_report(
+    db: Session,
+    *,
+    project: ManagerProject,
+    manager: User,
+    team: list[User],
+    workloads: dict[uuid.UUID, float],
+) -> dict:
+    req = _build_requirements(db, project)
+    skill_requirements = [
+        {"skill": name, "required_level": int(level), "weight": float(weight)}
+        for _, name, level, weight in req.skill_rows
+    ]
+    candidates = match_employees_for_project(
+        db, project=project, manager=manager, team=team, workloads=workloads
+    )
+    eligible_count = sum(1 for row in candidates if row.get("eligible"))
+    best_match_pct = max((float(row.get("match_pct") or 0) for row in candidates), default=0.0)
+    return {
+        "project": {
+            "id": str(project.id),
+            "name": project.name,
+            "department": (project.department or "").strip(),
+            "description": project.description or "",
+            "required_job_titles": sorted(req.required_titles),
+            "required_employees": int(project.required_employees or 1),
+            "skill_requirements": skill_requirements,
+            "status": project.status.value if hasattr(project.status, "value") else str(project.status),
+        },
+        "analysis_profile": {
+            "pipeline": "taxonomy_regex_v1",
+            "engine": "registration_cv_nlp_project_v3",
+            "signals": [
+                "registration_cv_intel",
+                "project_department_and_titles",
+                "weighted_project_skills",
+                "tfidf_semantic",
+                "inventory_and_cv_gap",
+            ],
+        },
+        "candidates": candidates,
+        "summary": {
+            "team_size": len(team),
+            "candidates_ranked": len(candidates),
+            "eligible_count": eligible_count,
+            "best_match_pct": round(best_match_pct, 1),
+        },
+    }

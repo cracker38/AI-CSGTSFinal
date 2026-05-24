@@ -1693,7 +1693,7 @@ export default function EmployeeDashboard() {
                     <>
                       <Box sx={{ display: { xs: "block", lg: "none" } }}>
                         <Stack spacing={2}>
-                          {recommendations.map((r, idx) => (
+                    {recommendations.map((r, idx) => (
                             <TrainingRecommendationCard
                               key={`${r.course_id || r.course}-${idx}`}
                               rec={r}
@@ -1741,7 +1741,7 @@ export default function EmployeeDashboard() {
                                     <Typography variant="caption" color="text.secondary" display="block">
                                       {r.provider || "—"}
                                     </Typography>
-                                  </TableCell>
+                      </TableCell>
                                   <TableCell>
                                     <Chip size="small" label={r.skill} />
                                   </TableCell>
@@ -1756,7 +1756,7 @@ export default function EmployeeDashboard() {
                                   <TableCell sx={{ whiteSpace: "nowrap" }}>
                                     {r.duration_weeks} wk · {r.mode}
                                   </TableCell>
-                                  <TableCell align="right">
+                        <TableCell align="right">
                                     <Button
                                       size="small"
                                       variant="contained"
@@ -1766,9 +1766,9 @@ export default function EmployeeDashboard() {
                                       {enrollingKey === `${r.course_id || r.course}-${r.skill}`
                                         ? "Sending…"
                                         : "Request from HR"}
-                                    </Button>
-                                  </TableCell>
-                                </TableRow>
+                          </Button>
+                        </TableCell>
+                      </TableRow>
                                 <TableRow>
                                   <TableCell colSpan={8} sx={{ py: 0, borderBottom: "1px solid", borderColor: "divider" }}>
                                     <Box
@@ -1925,7 +1925,7 @@ export default function EmployeeDashboard() {
                           )}
                           {(Number(c.progress_pct) || 0) >= 100 ? (
                             <Button
-                              size="small"
+                            size="small"
                               variant="contained"
                               color="success"
                               onClick={() => markTrainingComplete(c.id)}
