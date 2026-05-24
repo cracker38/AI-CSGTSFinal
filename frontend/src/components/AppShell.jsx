@@ -34,12 +34,9 @@ function navItemsForRole(role) {
       { label: "User management", to: "/app/admin?section=users", match: "/app/admin?section=users" },
       { label: "Master data", to: "/app/admin?section=masterdata", match: "/app/admin?section=masterdata" },
       { label: "Roles & permissions", to: "/app/admin?section=permissions", match: "/app/admin?section=permissions" },
-      { label: "System configuration", to: "/app/admin?section=config", match: "/app/admin?section=config" },
-      { label: "Integrations", to: "/app/admin?section=integrations", match: "/app/admin?section=integrations" },
       { label: "Audit logs", to: "/app/admin?section=audit", match: "/app/admin?section=audit" },
       { label: "Import / Export", to: "/app/admin?section=data", match: "/app/admin?section=data" },
-      { label: "System health", to: "/app/admin?section=health", match: "/app/admin?section=health" },
-      { label: "Backup & recovery", to: "/app/admin?section=backup", match: "/app/admin?section=backup" }
+      { label: "System health", to: "/app/admin?section=health", match: "/app/admin?section=health" }
     ];
   }
   if (role === "hr_admin") {
@@ -62,7 +59,6 @@ function navItemsForRole(role) {
       { label: "Career focus & résumé", to: "/app/employee?section=cvfocus", match: "/app/employee?section=cvfocus" },
       { label: "Personal profile", to: "/app/employee?section=profile", match: "/app/employee?section=profile" },
       { label: "Skill inventory", to: "/app/employee?section=skills", match: "/app/employee?section=skills" },
-      { label: "Self-assessment", to: "/app/employee?section=assessment", match: "/app/employee?section=assessment" },
       { label: "Skill gaps", to: "/app/employee?section=gaps", match: "/app/employee?section=gaps" },
       { label: "My projects", to: "/app/employee?section=projects", match: "/app/employee?section=projects" },
       { label: "Training recommendations", to: "/app/employee?section=recs", match: "/app/employee?section=recs" },

@@ -79,12 +79,106 @@ function AICourseLinkPanel({ course }) {
   );
 }
 
+function formatGapSeverity(severity) {
+  if (!severity || severity === "none") {
+    return { label: "Meets target", color: "success", variant: "outlined" };
+  }
+  const normalized = String(severity).toLowerCase();
+  if (normalized === "high") return { label: "High", color: "error", variant: "filled" };
+  if (normalized === "medium") return { label: "Medium", color: "warning", variant: "filled" };
+  if (normalized === "low") return { label: "Low", color: "info", variant: "filled" };
+  return { label: severity, color: "default", variant: "outlined" };
+}
+
+function formatEvidenceSource(source) {
+  if (!source) return "Inventory";
+  const map = {
+    cv: "CV",
+    manager: "Manager",
+    self: "Self-reported",
+    ai: "AI inferred"
+  };
+  return map[String(source).toLowerCase()] || String(source).replace(/_/g, " ");
+}
+
+function SkillGapCard({ gap }) {
+  const severity = formatGapSeverity(gap.severity);
+  const note = gap.competency_note || gap.explanation;
+
+  return (
+    <Paper variant="outlined" sx={{ p: 2, borderRadius: 2, borderColor: gap.gap > 0 ? "warning.light" : "divider" }}>
+      <Stack spacing={1.25}>
+        <Stack direction="row" spacing={1} alignItems="flex-start" justifyContent="space-between" flexWrap="wrap" useFlexGap>
+          <Box sx={{ minWidth: 0 }}>
+            <Typography variant="subtitle2" fontWeight={800} sx={{ wordBreak: "break-word" }}>
+              {gap.skill}
+            </Typography>
+            <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap sx={{ mt: 0.5 }}>
+              {gap.in_cv ? <Chip size="small" label="On CV" variant="outlined" /> : null}
+              {gap.in_experience_section ? <Chip size="small" label="Experience section" color="success" variant="outlined" /> : null}
+            </Stack>
+          </Box>
+          <Chip size="small" color={severity.color} variant={severity.variant} label={severity.label} />
+        </Stack>
+
+        <Grid container spacing={1}>
+          {[
+            { label: "Required", value: gap.required_level },
+            { label: "Current", value: gap.current_level },
+            { label: "CV level", value: gap.cv_inferred_level ?? "—" },
+            { label: "Gap", value: gap.gap },
+            {
+              label: "CV evidence",
+              value: gap.cv_confidence_pct != null && gap.cv_confidence_pct > 0 ? `${gap.cv_confidence_pct}%` : "—"
+            },
+            {
+              label: "Impact",
+              value: gap.weighted_gap_impact != null ? Number(gap.weighted_gap_impact).toFixed(2) : "—"
+            }
+          ].map((m) => (
+            <Grid item xs={4} sm={4} key={m.label}>
+              <Typography variant="caption" color="text.secondary" display="block">
+                {m.label}
+              </Typography>
+              <Typography variant="body2" fontWeight={700}>
+                {m.value}
+              </Typography>
+            </Grid>
+          ))}
+        </Grid>
+
+        <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+          <Chip size="small" variant="outlined" label={`Source: ${formatEvidenceSource(gap.evidence_source)}`} />
+        </Stack>
+
+        {note ? (
+          <Box
+            sx={{
+              p: 1.25,
+              borderRadius: 1.5,
+              bgcolor: "action.hover",
+              borderLeft: "3px solid",
+              borderColor: gap.gap > 0 ? "warning.main" : "success.main"
+            }}
+          >
+            <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 0.35 }}>
+              Competency note
+            </Typography>
+            <Typography variant="body2" sx={{ lineHeight: 1.6, wordBreak: "break-word" }}>
+              {note}
+            </Typography>
+          </Box>
+        ) : null}
+      </Stack>
+    </Paper>
+  );
+}
+
 const SECTIONS = [
   { key: "home", label: "Dashboard home" },
   { key: "cvfocus", label: "Career focus & résumé" },
   { key: "profile", label: "Personal profile" },
   { key: "skills", label: "Skill inventory" },
-  { key: "assessment", label: "Self-assessment" },
   { key: "gaps", label: "Skill gaps" },
   { key: "projects", label: "My projects" },
   { key: "recs", label: "Training recommendations" },
@@ -252,7 +346,6 @@ export default function EmployeeDashboard() {
   const [complianceRequirements, setComplianceRequirements] = useState([]);
   const [profileEdit, setProfileEdit] = useState({ phone_number: "", country: "", primary_skill: "", headline: "" });
   const [skillForm, setSkillForm] = useState({ skill: "", level: 1 });
-  const [assessmentForm, setAssessmentForm] = useState({ skill: "", self_score: 3, confidence: 3, years: 1 });
   const [goalForm, setGoalForm] = useState({ title: "", status: "Not started" });
   const [projectReportForm, setProjectReportForm] = useState({
     work_date: new Date().toISOString().slice(0, 10),
@@ -472,15 +565,6 @@ export default function EmployeeDashboard() {
       await loadAll();
     } catch (err) {
       setError(err?.response?.data?.detail || "Failed to remove skill");
-    }
-  }
-
-  async function submitAssessment() {
-    try {
-      await api.post("/analytics/employee/self-assessment", assessmentForm);
-      await loadAll();
-    } catch (err) {
-      setError(err?.response?.data?.detail || "Failed to submit self-assessment");
     }
   }
 
@@ -1280,31 +1364,15 @@ export default function EmployeeDashboard() {
               </Card>
             ) : null}
 
-            {!loading && activeSection === "assessment" ? (
-              <Card variant="outlined"><CardContent>
-                <Typography variant="h6" fontWeight={800}>Self-assessment</Typography>
-                <Divider sx={{ my: 2 }} />
-                <Stack direction={{ xs: "column", md: "row" }} spacing={1}>
-                  <TextField size="small" label="Skill" value={assessmentForm.skill} onChange={(e) => setAssessmentForm((f) => ({ ...f, skill: e.target.value }))} />
-                  <TextField size="small" type="number" label="Rate (1-5)" value={assessmentForm.self_score} onChange={(e) => setAssessmentForm((f) => ({ ...f, self_score: Number(e.target.value) }))} />
-                  <TextField size="small" type="number" label="Confidence (1-5)" value={assessmentForm.confidence} onChange={(e) => setAssessmentForm((f) => ({ ...f, confidence: Number(e.target.value) }))} />
-                  <TextField size="small" type="number" label="Experience years" value={assessmentForm.years} onChange={(e) => setAssessmentForm((f) => ({ ...f, years: Number(e.target.value) }))} />
-                  <Button variant="contained" onClick={submitAssessment}>Submit</Button>
-                </Stack>
-              </CardContent></Card>
-            ) : null}
-
             {!loading && activeSection === "gaps" ? (
-              <Card variant="outlined">
-                <CardContent>
+              <SectionPanel>
                   <Typography variant="h6" fontWeight={800}>
-                    Individual skill gap visualization
+                    Skill gap analysis
                   </Typography>
                   <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-                    Competency comparison for <strong>{gaps?.role_context?.job_title || "your position"}</strong>
-                    {gaps?.role_context?.department ? ` · ${gaps.role_context.department}` : ""} — primary skill{" "}
-                    <strong>{gaps?.role_context?.primary_skill || "—"}</strong>. Blends HR role profile, validated inventory,
-                    and deep résumé evidence (confidence, experience section, inferred levels).
+                    Compared to your HR role profile: <strong>{gaps?.role_context?.job_title || "your position"}</strong>
+                    {gaps?.role_context?.department ? ` · ${gaps.role_context.department}` : ""} · primary skill{" "}
+                    <strong>{gaps?.role_context?.primary_skill || "—"}</strong>
                   </Typography>
                   {gaps?.cv_competency ? (
                     <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mt: 1.5 }}>
@@ -1387,8 +1455,7 @@ export default function EmployeeDashboard() {
                   ) : null}
                   {gapChartRows.length === 0 ? (
                     <Alert severity="success" sx={{ mb: 2 }}>
-                      All required skills meet or exceed targets for your HR role profile. Upload skills via résumé or
-                      self-assessment if something is missing.
+                      All required skills meet or exceed targets for your HR role profile. Upload an updated résumé if something is missing.
                     </Alert>
                   ) : (
                     <Box sx={{ width: "100%", height: 320, mb: 2 }}>
@@ -1411,81 +1478,106 @@ export default function EmployeeDashboard() {
                   {gapTableRows.length === 0 ? (
                     <Alert severity="info">Loading gap breakdown…</Alert>
                   ) : (
-                  <TableContainer>
-                    <Table size="small">
+                    <>
+                      <Box sx={{ display: { xs: "block", lg: "none" } }}>
+                        <Stack spacing={2}>
+                          {gapTableRows.map((g) => (
+                            <SkillGapCard key={g.skill} gap={g} />
+                          ))}
+                        </Stack>
+                      </Box>
+                      <TableContainer sx={{ display: { xs: "none", lg: "block" }, overflowX: "auto", width: "100%" }}>
+                        <Table size="small" sx={{ minWidth: 720 }}>
                       <TableHead>
                         <TableRow>
-                          <TableCell>Skill</TableCell>
+                          <TableCell sx={{ minWidth: 140 }}>Skill</TableCell>
                           <TableCell align="right">Required</TableCell>
                           <TableCell align="right">Current</TableCell>
-                            <TableCell align="right">CV level</TableCell>
+                          <TableCell align="right">CV level</TableCell>
                           <TableCell align="right">Gap</TableCell>
-                            <TableCell>CV evidence</TableCell>
-                            <TableCell>Source</TableCell>
-                            <TableCell align="right">Impact</TableCell>
+                          <TableCell align="right">CV evidence</TableCell>
+                          <TableCell align="right">Impact</TableCell>
                           <TableCell>Severity</TableCell>
-                            <TableCell>Competency note</TableCell>
                         </TableRow>
                       </TableHead>
                       <TableBody>
-                          {gapTableRows.map((g) => (
-                            <TableRow key={g.skill} sx={{ bgcolor: g.gap > 0 ? "action.hover" : undefined }}>
-                              <TableCell>
-                                {g.skill}
-                                {g.in_cv ? (
-                                  <Chip size="small" label="on CV" variant="outlined" sx={{ ml: 0.75 }} />
-                                ) : null}
-                                {g.in_experience_section ? (
-                                  <Chip size="small" label="experience" color="success" variant="outlined" sx={{ ml: 0.5 }} />
-                                ) : null}
-                              </TableCell>
-                            <TableCell align="right">{g.required_level}</TableCell>
-                            <TableCell align="right">{g.current_level}</TableCell>
-                              <TableCell align="right">{g.cv_inferred_level ?? "—"}</TableCell>
-                            <TableCell align="right">{g.gap}</TableCell>
-                              <TableCell>
-                                {g.cv_confidence_pct != null && g.cv_confidence_pct > 0
-                                  ? `${g.cv_confidence_pct}%`
-                                  : "—"}
-                              </TableCell>
-                              <TableCell>
-                                <Chip size="small" variant="outlined" label={g.evidence_source || "—"} />
-                              </TableCell>
-                              <TableCell align="right">
-                                {g.weighted_gap_impact != null ? Number(g.weighted_gap_impact).toFixed(2) : "—"}
-                              </TableCell>
-                            <TableCell>
-                              <Chip
-                                size="small"
-                                color={
-                                  g.severity === "high"
-                                    ? "error"
-                                    : g.severity === "medium"
-                                      ? "warning"
-                                      : g.severity === "low"
-                                        ? "warning"
-                                        : "success"
-                                }
-                                label={g.severity === "none" ? "meets target" : g.severity}
-                                variant={g.severity === "none" ? "outlined" : "filled"}
-                              />
-                            </TableCell>
-                              <TableCell sx={{ maxWidth: 320, whiteSpace: "normal" }}>
-                                {g.competency_note || g.explanation || "—"}
-                            </TableCell>
-                          </TableRow>
-                        ))}
+                          {gapTableRows.map((g) => {
+                            const severity = formatGapSeverity(g.severity);
+                            const note = g.competency_note || g.explanation;
+                            return (
+                              <React.Fragment key={g.skill}>
+                                <TableRow sx={{ bgcolor: g.gap > 0 ? "action.hover" : undefined }}>
+                                  <TableCell sx={{ verticalAlign: "top" }}>
+                                    <Typography variant="body2" fontWeight={700} sx={{ wordBreak: "break-word" }}>
+                                      {g.skill}
+                                    </Typography>
+                                    <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap sx={{ mt: 0.5 }}>
+                                      {g.in_cv ? <Chip size="small" label="On CV" variant="outlined" /> : null}
+                                      {g.in_experience_section ? (
+                                        <Chip size="small" label="Experience" color="success" variant="outlined" />
+                                      ) : null}
+                                    </Stack>
+                                  </TableCell>
+                                  <TableCell align="right" sx={{ verticalAlign: "top" }}>{g.required_level}</TableCell>
+                                  <TableCell align="right" sx={{ verticalAlign: "top" }}>{g.current_level}</TableCell>
+                                  <TableCell align="right" sx={{ verticalAlign: "top" }}>{g.cv_inferred_level ?? "—"}</TableCell>
+                                  <TableCell align="right" sx={{ verticalAlign: "top", fontWeight: g.gap > 0 ? 700 : 400 }}>
+                                    {g.gap}
+                                  </TableCell>
+                                  <TableCell align="right" sx={{ verticalAlign: "top", whiteSpace: "nowrap" }}>
+                                    {g.cv_confidence_pct != null && g.cv_confidence_pct > 0 ? `${g.cv_confidence_pct}%` : "—"}
+                                  </TableCell>
+                                  <TableCell align="right" sx={{ verticalAlign: "top" }}>
+                                    {g.weighted_gap_impact != null ? Number(g.weighted_gap_impact).toFixed(2) : "—"}
+                                  </TableCell>
+                                  <TableCell sx={{ verticalAlign: "top" }}>
+                                    <Chip size="small" color={severity.color} variant={severity.variant} label={severity.label} />
+                                  </TableCell>
+                                </TableRow>
+                                <TableRow>
+                                  <TableCell colSpan={8} sx={{ py: 0, borderBottom: "1px solid", borderColor: "divider" }}>
+                                    <Box sx={{ py: 1.25, mb: 0.5 }}>
+                                      <Chip
+                                        size="small"
+                                        variant="outlined"
+                                        label={`Source: ${formatEvidenceSource(g.evidence_source)}`}
+                                        sx={{ mb: note ? 1 : 0 }}
+                                      />
+                                      {note ? (
+                                        <Box
+                                          sx={{
+                                            p: 1.25,
+                                            borderRadius: 1.5,
+                                            bgcolor: "action.hover",
+                                            borderLeft: "3px solid",
+                                            borderColor: g.gap > 0 ? "warning.main" : "success.main"
+                                          }}
+                                        >
+                                          <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 0.35 }}>
+                                            Competency note
+                                          </Typography>
+                                          <Typography variant="body2" sx={{ lineHeight: 1.65, wordBreak: "break-word" }}>
+                                            {note}
+                                          </Typography>
+                                        </Box>
+                                      ) : null}
+                                    </Box>
+                                  </TableCell>
+                                </TableRow>
+                              </React.Fragment>
+                            );
+                          })}
                       </TableBody>
                     </Table>
                   </TableContainer>
+                    </>
                   )}
                   {gaps?.explainability?.rule ? (
                     <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 2 }}>
                       {gaps.explainability.rule} {gaps.explainability.weighted_gaps}
                     </Typography>
                   ) : null}
-                </CardContent>
-              </Card>
+              </SectionPanel>
             ) : null}
 
             {!loading && activeSection === "projects" ? (
