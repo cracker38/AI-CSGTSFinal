@@ -66,7 +66,7 @@ def _active_enrolled_skills(db: Session, user_id) -> set[str]:
         .filter(
             HrAction.target_user_id == user_id,
             HrAction.action_type == "training_assign",
-            HrAction.status.in_(["assigned", "in_progress"]),
+            HrAction.status.in_(["pending", "assigned", "in_progress"]),
         )
         .all()
     )

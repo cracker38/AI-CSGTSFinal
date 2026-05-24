@@ -15,6 +15,7 @@ from app.models.skill import Skill
 from app.models.user_skill import SkillSource, UserSkill
 from app.schemas.hr_action import MaterialReadingProgressUpdate, TrainingAssignmentProgressUpdate
 from app.services.skill_normalization import normalize_skill_name
+from app.services.training_catalog import resolve_official_course_link
 
 # Heartbeat gap after which an open session is auto-paused (employee idle / closed browser).
 def stale_heartbeat_seconds() -> int:
@@ -150,9 +151,17 @@ def refresh_stale_training_sessions_global(db: Session) -> None:
         db.commit()
 
 
+def _require_hr_approved_training(action: HrAction) -> None:
+    if action.status == "pending":
+        raise ValueError("This training is pending HR approval. You will be notified when HR approves and uploads course content.")
+    if action.status == "rejected":
+        raise ValueError("This training request was declined by HR.")
+
+
 def start_training_session(db: Session, action: HrAction) -> HrAction:
     if action.action_type != "training_assign":
         raise ValueError("Not a training assignment")
+    _require_hr_approved_training(action)
     if action.status in ("completed", "cancelled"):
         raise ValueError("Training is not active")
     if apply_stale_autopause_if_needed(action):
@@ -210,6 +219,7 @@ def _close_open_session_payload(payload: dict, ended_at: datetime, *, closed_by:
 def end_training_session(db: Session, action: HrAction) -> HrAction:
     if action.action_type != "training_assign":
         raise ValueError("Not a training assignment")
+    _require_hr_approved_training(action)
     if action.status in ("completed", "cancelled"):
         raise ValueError("Training is not active")
     if apply_stale_autopause_if_needed(action):
@@ -230,6 +240,7 @@ def end_training_session(db: Session, action: HrAction) -> HrAction:
 def training_session_heartbeat(db: Session, action: HrAction) -> HrAction:
     if action.action_type != "training_assign":
         raise ValueError("Not a training assignment")
+    _require_hr_approved_training(action)
     if action.status in ("completed", "cancelled"):
         raise ValueError("Training is not active")
     if apply_stale_autopause_if_needed(action):
@@ -393,6 +404,13 @@ def training_assignment_to_progress_item(action: HrAction) -> dict:
         )
     vid_dur = float(payload.get("material_video_duration_sec") or 0)
     vid_mx = float(payload.get("material_video_max_position_sec") or 0)
+    link_meta = resolve_official_course_link(
+        catalog_course_id=payload.get("catalog_course_id"),
+        program_name=course,
+        target_skill=skill,
+        official_url=payload.get("official_url"),
+        provider=payload.get("provider"),
+    )
     return {
         "id": str(action.id),
         "course": course,
@@ -422,6 +440,10 @@ def training_assignment_to_progress_item(action: HrAction) -> dict:
         "updated_at": action.updated_at.isoformat() if action.updated_at else None,
         "completed_at": payload.get("completed_at") if st == "completed" else None,
         "sessions_log": list(payload.get("sessions_log") or []),
+        "official_url": link_meta.get("official_url"),
+        "provider": link_meta.get("provider"),
+        "catalog_course_id": link_meta.get("catalog_course_id"),
+        "ai_course_link": bool(link_meta.get("official_url")),
     }
 
 
@@ -580,9 +602,12 @@ def apply_training_assignment_update(
     skill_source_on_complete: SkillSource,
     require_active_session_for_progress_change: bool = False,
     require_minimum_verified_time_to_complete: bool = False,
+    require_full_progress_for_completion: bool = False,
+    allow_progress_pct_auto_complete: bool = True,
 ) -> HrAction:
     if action.action_type != "training_assign":
         raise ValueError("Not a training assignment")
+    _require_hr_approved_training(action)
     if action.status == "completed":
         raise ValueError("Training is already completed")
     if action.status == "cancelled":
@@ -607,7 +632,19 @@ def apply_training_assignment_update(
     now_iso = _now_iso()
     now_dt = datetime.now(timezone.utc)
 
-    mark_done = body.mark_completed or (body.progress_pct is not None and body.progress_pct >= 100)
+    mark_done = body.mark_completed or (
+        allow_progress_pct_auto_complete
+        and body.progress_pct is not None
+        and body.progress_pct >= 100
+    )
+
+    if mark_done and body.mark_completed and require_full_progress_for_completion:
+        current_progress = int(payload.get("progress_pct") or 0)
+        if current_progress < 100:
+            raise ValueError(
+                "Course progress must reach 100% before you can mark complete. "
+                "Finish the course material while a learning session is active, then click Mark complete."
+            )
 
     if body.note:
         payload["last_progress_note"] = body.note.strip()[:2000]

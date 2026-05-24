@@ -118,6 +118,7 @@ export default function HrDashboard() {
   const [promotionDialog, setPromotionDialog] = useState(null);
   const [promotionNote, setPromotionNote] = useState("");
   const [hrOpenTrainings, setHrOpenTrainings] = useState([]);
+  const [hrPendingEnrollments, setHrPendingEnrollments] = useState([]);
   const [hrTrainPct, setHrTrainPct] = useState({});
   const { mode } = useThemeMode();
   const { colors, tooltipStyle } = getChartTheme(mode);
@@ -184,6 +185,8 @@ export default function HrDashboard() {
       });
       const trainOpenRes = await api.get("/analytics/hr/training-assignments");
       setHrOpenTrainings(trainOpenRes.data || []);
+      const pendingEnrollRes = await api.get("/analytics/hr/training-enrollment-requests");
+      setHrPendingEnrollments(pendingEnrollRes.data || []);
       const cRes = await api.get("/analytics/hr/compliance");
       setComplianceData(cRes.data || { rows: [], alerts: { expiring_soon: 0, missing: 0 } });
       const recRes = await api.get("/analytics/hr/recruitment-insights");
@@ -283,6 +286,36 @@ export default function HrDashboard() {
     }
   }
 
+  async function approveEnrollmentRequest(row) {
+    setError("");
+    try {
+      await api.post(`/analytics/hr/training-enrollment-requests/${row.id}/approve`, { note: "" });
+      toastOk("Enrollment approved. Upload PDF/video so the employee can open the course.");
+      setTrainingMaterialsEdit({
+        id: row.id,
+        label: `${row.employee_name} — ${row.program_name}`,
+        filename: "",
+        kind: ""
+      });
+      await load();
+    } catch (err) {
+      setError(getApiErrorMessage(err, "Failed to approve enrollment"));
+    }
+  }
+
+  async function rejectEnrollmentRequest(row) {
+    setError("");
+    try {
+      await api.post(`/analytics/hr/training-enrollment-requests/${row.id}/reject`, {
+        note: "Not approved at this time."
+      });
+      toastOk("Enrollment request rejected.");
+      await load();
+    } catch (err) {
+      setError(getApiErrorMessage(err, "Failed to reject enrollment"));
+    }
+  }
+
   async function uploadTrainingCourseMaterial() {
     if (!trainingMaterialsEdit) return;
     const file = trainingMaterialFileRef.current?.files?.[0];
@@ -360,7 +393,9 @@ export default function HrDashboard() {
         program_name: programName,
         target_skill: targetSkill,
         estimated_cost: trainingDialog.cost != null ? Number(trainingDialog.cost) : null,
-        note: trainingNote.trim() || null
+        note: trainingNote.trim() || null,
+        official_url: trainingDialog.official_url || null,
+        provider: trainingDialog.provider || null
       });
       const newId = res.data?.id;
       setTrainingDialog(null);
@@ -1282,11 +1317,81 @@ export default function HrDashboard() {
                                     setTrainingDialog({
                                       program_name: p.program_name,
                                       target_skill: p.target_skill,
-                                      cost: p.suggested_investment
+                                      cost: p.suggested_investment,
+                                      official_url: p.official_url,
+                                      provider: p.provider
                                     });
                                   }}
                                 >
                                   Assign employee
+                                </Button>
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </TableContainer>
+                  )}
+                  <Divider sx={{ my: 2 }} />
+                  <Typography variant="subtitle1" fontWeight={800} sx={{ mb: 1 }}>
+                    Employee enrollment requests (awaiting HR)
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+                    Employees request courses from their recommendations. Approve each request, then upload the official PDF or video so they can open it from Training progress.
+                  </Typography>
+                  {hrPendingEnrollments.length === 0 ? (
+                    <Alert severity="info" sx={{ mb: 2 }}>No pending enrollment requests.</Alert>
+                  ) : (
+                    <TableContainer sx={{ mb: 2 }}>
+                      <Table size="small">
+                        <TableHead>
+                          <TableRow>
+                            <TableCell>Employee</TableCell>
+                            <TableCell>Course</TableCell>
+                            <TableCell>Skill</TableCell>
+                            <TableCell>Provider</TableCell>
+                            <TableCell>Requested</TableCell>
+                            <TableCell align="right">Actions</TableCell>
+                          </TableRow>
+                        </TableHead>
+                        <TableBody>
+                          {hrPendingEnrollments.map((row) => (
+                            <TableRow key={row.id}>
+                              <TableCell>
+                                <Typography fontWeight={600}>{row.employee_name}</Typography>
+                                <Typography variant="caption" color="text.secondary">{row.employee_email}</Typography>
+                              </TableCell>
+                              <TableCell sx={{ maxWidth: 220 }}>
+                                {row.official_url ? (
+                                  <Typography
+                                    component="a"
+                                    href={row.official_url}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    variant="body2"
+                                    fontWeight={600}
+                                  >
+                                    {row.program_name}
+                                  </Typography>
+                                ) : (
+                                  row.program_name
+                                )}
+                              </TableCell>
+                              <TableCell>{row.target_skill}</TableCell>
+                              <TableCell>{row.provider || "—"}</TableCell>
+                              <TableCell sx={{ whiteSpace: "nowrap" }}>
+                                {row.requested_at
+                                  ? new Date(row.requested_at).toLocaleString()
+                                  : row.created_at
+                                    ? new Date(row.created_at).toLocaleString()
+                                    : "—"}
+                              </TableCell>
+                              <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>
+                                <Button size="small" variant="contained" sx={{ mr: 0.5 }} onClick={() => approveEnrollmentRequest(row)}>
+                                  Approve & upload
+                                </Button>
+                                <Button size="small" color="error" variant="outlined" onClick={() => rejectEnrollmentRequest(row)}>
+                                  Reject
                                 </Button>
                               </TableCell>
                             </TableRow>

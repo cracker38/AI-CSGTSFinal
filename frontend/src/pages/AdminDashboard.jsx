@@ -44,6 +44,12 @@ import { exportElementToPdfLazy } from "../utils/pdfExportLazy";
 import { exportRowsToCsv } from "../utils/csvExport";
 import { getApiErrorMessage } from "../utils/apiError";
 
+const PROTECTED_ADMIN_ROLES = new Set(["system_admin", "hr_admin"]);
+
+function isProtectedAdmin(user) {
+  return Boolean(user && PROTECTED_ADMIN_ROLES.has(user.role));
+}
+
 const SECTIONS = [
   { key: "users", label: "User management" },
   { key: "masterdata", label: "Master data" },
@@ -222,6 +228,11 @@ export default function AdminDashboard() {
   }
 
   async function setUserStatus(userId, status) {
+    const user = allUsers.find((u) => u.id === userId);
+    if (status === "disabled" && isProtectedAdmin(user)) {
+      setError("Administrator accounts cannot be disabled.");
+      return;
+    }
     setError("");
     try {
       await api.patch(`/admin/users/${userId}/status`, { status });
@@ -256,9 +267,22 @@ export default function AdminDashboard() {
 
   async function bulkSetStatus(status) {
     setError("");
+    const eligibleIds = selectedUserIds.filter((id) => {
+      const user = allUsers.find((u) => u.id === id);
+      return user && !isProtectedAdmin(user);
+    });
+    if (eligibleIds.length === 0) {
+      setError("Administrator accounts (system admin, HR admin) cannot be disabled.");
+      return;
+    }
     try {
-      await Promise.all(selectedUserIds.map((id) => api.patch(`/admin/users/${id}/status`, { status })));
-      setSuccess(`Updated ${selectedUserIds.length} users to ${status}.`);
+      await Promise.all(eligibleIds.map((id) => api.patch(`/admin/users/${id}/status`, { status })));
+      const skipped = selectedUserIds.length - eligibleIds.length;
+      setSuccess(
+        skipped > 0
+          ? `Updated ${eligibleIds.length} users to ${status}. Skipped ${skipped} protected admin account(s).`
+          : `Updated ${eligibleIds.length} users to ${status}.`
+      );
       await refreshUsers();
     } catch (err) {
       setError(getApiErrorMessage(err, "Bulk status update failed"));
@@ -352,6 +376,8 @@ export default function AdminDashboard() {
       };
       if (editUser.role !== "system_admin") {
         payload.role = editForm.role;
+      }
+      if (!isProtectedAdmin(editUser)) {
         payload.status = editForm.status;
       }
       if (editUser.role === "employee") {
@@ -369,6 +395,10 @@ export default function AdminDashboard() {
   }
 
   async function deleteAdminUser(user) {
+    if (isProtectedAdmin(user)) {
+      setError("Administrator accounts cannot be deleted.");
+      return;
+    }
     setError("");
     try {
       await api.delete(`/admin/users/${user.id}`);
@@ -826,6 +856,7 @@ export default function AdminDashboard() {
                               <Stack direction="row" flexWrap="wrap" gap={0.8}>
                                 <Chip size="small" label={u.role} />
                                 <Chip size="small" label={u.status} color={u.status === "active" ? "success" : u.status === "disabled" ? "warning" : "default"} />
+                                {isProtectedAdmin(u) ? <Chip size="small" color="info" variant="outlined" label="Protected admin" /> : null}
                                 <Chip size="small" variant="outlined" label={u.must_change_password ? "Force password change" : "Standard password"} />
                               </Stack>
                               <Typography variant="caption" color="text.secondary">
@@ -836,7 +867,7 @@ export default function AdminDashboard() {
                                   <Button size="small" variant="outlined" onClick={() => setUserStatus(u.id, "active")} fullWidth>
                                     Activate
                                   </Button>
-                                ) : (
+                                ) : !isProtectedAdmin(u) ? (
                                   <Button
                                     size="small"
                                     variant="outlined"
@@ -852,7 +883,7 @@ export default function AdminDashboard() {
                                   >
                                     Disable
                                   </Button>
-                                )}
+                                ) : null}
                                 <Button size="small" variant="outlined" onClick={() => forcePwdChange(u.id)} fullWidth>
                                   Force password change
                                 </Button>
@@ -874,21 +905,23 @@ export default function AdminDashboard() {
                                 <Button size="small" variant="outlined" onClick={() => openEditUser(u)} fullWidth>
                                   Edit user
                                 </Button>
-                                <Button
-                                  size="small"
-                                  variant="outlined"
-                                  color="error"
-                                  fullWidth
-                                  onClick={() =>
-                                    setConfirmAction({
-                                      title: "Permanently delete user?",
-                                      description: `Delete ${u.full_name} (${u.email}). This cannot be undone.`,
-                                      onConfirm: () => deleteAdminUser(u)
-                                    })
-                                  }
-                                >
-                                  Delete user
-                                </Button>
+                                {!isProtectedAdmin(u) ? (
+                                  <Button
+                                    size="small"
+                                    variant="outlined"
+                                    color="error"
+                                    fullWidth
+                                    onClick={() =>
+                                      setConfirmAction({
+                                        title: "Permanently delete user?",
+                                        description: `Delete ${u.full_name} (${u.email}). This cannot be undone.`,
+                                        onConfirm: () => deleteAdminUser(u)
+                                      })
+                                    }
+                                  >
+                                    Delete user
+                                  </Button>
+                                ) : null}
                               </Stack>
                             </Stack>
                           </CardContent>
@@ -966,6 +999,9 @@ export default function AdminDashboard() {
                               <TableCell>{u.email}</TableCell>
                               <TableCell>
                                 <Chip size="small" label={u.role} />
+                                {isProtectedAdmin(u) ? (
+                                  <Chip size="small" color="info" variant="outlined" label="Protected" sx={{ ml: 0.5 }} />
+                                ) : null}
                               </TableCell>
                               <TableCell>
                                 <Chip
@@ -1348,22 +1384,27 @@ export default function AdminDashboard() {
                   <option value="hr_admin">hr_admin</option>
                   <option value="executive">executive</option>
                 </TextField>
-                <TextField
-                  label="Status"
-                  value={editForm.status || "active"}
-                  onChange={(e) => setEditForm({ ...editForm, status: e.target.value })}
-                  fullWidth
-                  select
-                  SelectProps={{ native: true }}
-                >
-                  <option value="active">active</option>
-                  <option value="disabled">disabled</option>
-                  <option value="pending_approval">pending_approval</option>
-                </TextField>
+                {!isProtectedAdmin(editUser) ? (
+                  <TextField
+                    label="Status"
+                    value={editForm.status || "active"}
+                    onChange={(e) => setEditForm({ ...editForm, status: e.target.value })}
+                    fullWidth
+                    select
+                    SelectProps={{ native: true }}
+                  >
+                    <option value="active">active</option>
+                    <option value="disabled">disabled</option>
+                    <option value="pending_approval">pending_approval</option>
+                  </TextField>
+                ) : null}
               </>
             ) : (
               <Alert severity="info">System administrator: role and status are locked; profile fields can be updated.</Alert>
             )}
+            {editUser?.role === "hr_admin" ? (
+              <Alert severity="info">HR administrator accounts cannot be disabled or deleted.</Alert>
+            ) : null}
           </Stack>
         </DialogContent>
         <DialogActions>
@@ -1431,13 +1472,14 @@ export default function AdminDashboard() {
           onClick={() => {
             const user = rowMenuUser;
             closeRowMenu();
-            if (!user) return;
+            if (!user || isProtectedAdmin(user)) return;
             setConfirmAction({
               title: "Permanently delete user?",
               description: `Delete ${user.full_name} (${user.email}). This cannot be undone.`,
               onConfirm: () => deleteAdminUser(user)
             });
           }}
+          disabled={isProtectedAdmin(rowMenuUser)}
         >
           Delete user
         </MenuItem>
@@ -1451,7 +1493,7 @@ export default function AdminDashboard() {
           >
             Activate
           </MenuItem>
-        ) : (
+        ) : !isProtectedAdmin(rowMenuUser) ? (
           <MenuItem
             onClick={() => {
               const user = rowMenuUser;
@@ -1466,7 +1508,7 @@ export default function AdminDashboard() {
           >
             Disable
           </MenuItem>
-        )}
+        ) : null}
         <MenuItem
           onClick={() => {
             const user = rowMenuUser;

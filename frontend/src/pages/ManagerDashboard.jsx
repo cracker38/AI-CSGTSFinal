@@ -26,6 +26,7 @@ import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxi
 import { useSearchParams } from "react-router-dom";
 import AppShell from "../components/AppShell";
 import { api } from "../api/client";
+import { getApiErrorMessage } from "../utils/apiError";
 
 const SECTIONS = [
   { key: "home", label: "Home overview" },
@@ -260,7 +261,7 @@ export default function ManagerDashboard() {
     const selectedProject = projects.find((p) => p.id === selectedProjectId);
     const selectedMember = team.find((m) => m.id === assignEmployeeId);
     if (!selectedProject || !selectedMember) return;
-    const blockedReason = getAssignmentBlockReason(selectedMember, selectedProject);
+    const blockedReason = getAssignmentBlockReason(selectedMember, selectedProject, assignAllocationPct);
     if (blockedReason) {
       setError(blockedReason);
       return;
@@ -275,7 +276,7 @@ export default function ManagerDashboard() {
       await runMatching();
       setAssignSuccess(`Assigned ${selectedMember.name} to ${selectedProject.name} (${assignAllocationPct}%).`);
     } catch (err) {
-      setError(err?.response?.data?.detail || "Assignment failed");
+      setError(getApiErrorMessage(err, "Assignment failed"));
     }
   }
 
@@ -414,14 +415,16 @@ export default function ManagerDashboard() {
     }
   }, [selectedProjectId, selectableProjects]);
 
-  function getAssignmentBlockReason(member, project) {
+  function getAssignmentBlockReason(member, project, allocationPct = 100) {
     if (!project) return "Select a project first.";
     const requiredTitles = (project.required_job_titles || []).map(normalizeTitle);
     if (requiredTitles.length && !requiredTitles.includes(normalizeTitle(member.role))) {
       return "Employee job title does not match project required job titles.";
     }
-    if (Number(member.workload_pct || 0) >= 100) {
-      return "Employee is overloaded.";
+    const currentOnProject = Number(projectAssignmentsMap[member.id] || 0);
+    const projected = Number(member.workload_pct || 0) - currentOnProject + Number(allocationPct || 0);
+    if (projected > 100) {
+      return `Allocation would exceed 100% workload (current ${Number(member.workload_pct || 0)}%).`;
     }
     return "";
   }
@@ -864,7 +867,7 @@ export default function ManagerDashboard() {
                   </TextField>
                   <TextField select size="small" label="Employee" value={assignEmployeeId} onChange={(e) => setAssignEmployeeId(e.target.value)} sx={{ minWidth: 300 }}>
                     {team.map((t) => {
-                      const reason = getAssignmentBlockReason(t, selectedProject);
+                      const reason = getAssignmentBlockReason(t, selectedProject, assignAllocationPct);
                       const currentAllocation = projectAssignmentsMap[t.id] || 0;
                       return (
                         <MenuItem key={t.id} value={t.id} disabled={Boolean(reason)}>

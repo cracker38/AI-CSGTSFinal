@@ -16,6 +16,7 @@ from app.models.employee_profile import EmployeeProfile
 from app.models.hr_action import HrAction
 from app.models.user import AccountStatus, User, UserRole
 from app.models.user_skill import SkillSource
+from app.services.training_catalog import resolve_official_course_link
 from app.services.training_assignments import (
     apply_training_assignment_update,
     ensure_training_attendance_defaults,
@@ -30,6 +31,7 @@ from app.schemas.hr_action import (
     HrActionPublic,
     PromotionRecommendRequest,
     TrainingAssignRequest,
+    TrainingEnrollmentReviewRequest,
     TrainingAssignmentProgressUpdate,
 )
 from app.services.audit import write_audit_log
@@ -159,6 +161,13 @@ def assign_training(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Employee must be active")
 
     now_iso = datetime.now(timezone.utc).isoformat()
+    link_meta = resolve_official_course_link(
+        catalog_course_id=body.catalog_course_id,
+        program_name=body.program_name,
+        target_skill=body.target_skill,
+        official_url=body.official_url,
+        provider=body.provider,
+    )
     payload = ensure_training_attendance_defaults(
         {
             "program_name": body.program_name,
@@ -167,6 +176,9 @@ def assign_training(
             "progress_pct": 0,
             "assigned_at": now_iso,
             "source": "hr_assignment",
+            "official_url": link_meta.get("official_url"),
+            "provider": link_meta.get("provider"),
+            "catalog_course_id": link_meta.get("catalog_course_id"),
         }
     )
     action = HrAction(
@@ -189,6 +201,109 @@ def assign_training(
         entity_type="user",
         entity_id=str(user.id),
         meta={"hr_action_id": str(action.id), **payload},
+    )
+    return action
+
+
+@router.get("/hr/training-enrollment-requests")
+def list_training_enrollment_requests(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_roles(UserRole.hr_admin)),
+) -> list[dict]:
+    rows = (
+        db.query(HrAction, User)
+        .join(User, User.id == HrAction.target_user_id)
+        .filter(HrAction.action_type == "training_assign", HrAction.status == "pending")
+        .order_by(HrAction.created_at.desc())
+        .limit(200)
+        .all()
+    )
+    out = []
+    for action, employee in rows:
+        payload = action.payload or {}
+        out.append(
+            {
+                "id": str(action.id),
+                "employee_id": str(employee.id),
+                "employee_name": employee.full_name,
+                "employee_email": employee.email,
+                "program_name": payload.get("program_name"),
+                "target_skill": payload.get("target_skill"),
+                "provider": payload.get("provider"),
+                "official_url": payload.get("official_url"),
+                "requested_at": payload.get("requested_at"),
+                "note": action.note,
+                "created_at": action.created_at.isoformat() if action.created_at else None,
+            }
+        )
+    return out
+
+
+@router.post("/hr/training-enrollment-requests/{action_id}/approve", response_model=HrActionPublic)
+def approve_training_enrollment_request(
+    action_id: uuid.UUID,
+    body: TrainingEnrollmentReviewRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    actor: User = Depends(require_roles(UserRole.hr_admin)),
+) -> HrAction:
+    action = db.query(HrAction).filter(HrAction.id == action_id).one_or_none()
+    if not action or action.action_type != "training_assign" or action.status != "pending":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Pending enrollment request not found")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    payload = ensure_training_attendance_defaults(dict(action.payload or {}))
+    payload["approved_at"] = now_iso
+    payload["approved_by"] = str(actor.id)
+    payload["assigned_at"] = now_iso
+    payload["source"] = "hr_approved_enrollment"
+    action.payload = payload
+    action.status = "assigned"
+    if body.note and body.note.strip():
+        action.note = body.note.strip()[:2000]
+    db.add(action)
+    db.commit()
+    db.refresh(action)
+    write_audit_log(
+        db,
+        request=request,
+        actor_user_id=actor.id,
+        action="hr.training.enrollment_approve",
+        entity_type="hr_action",
+        entity_id=str(action.id),
+        meta={"target_user_id": str(action.target_user_id), "program_name": payload.get("program_name")},
+    )
+    return action
+
+
+@router.post("/hr/training-enrollment-requests/{action_id}/reject", response_model=HrActionPublic)
+def reject_training_enrollment_request(
+    action_id: uuid.UUID,
+    body: TrainingEnrollmentReviewRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    actor: User = Depends(require_roles(UserRole.hr_admin)),
+) -> HrAction:
+    action = db.query(HrAction).filter(HrAction.id == action_id).one_or_none()
+    if not action or action.action_type != "training_assign" or action.status != "pending":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Pending enrollment request not found")
+    payload = dict(action.payload or {})
+    payload["rejected_at"] = datetime.now(timezone.utc).isoformat()
+    payload["rejected_by"] = str(actor.id)
+    action.payload = payload
+    action.status = "rejected"
+    if body.note and body.note.strip():
+        action.note = body.note.strip()[:2000]
+    db.add(action)
+    db.commit()
+    db.refresh(action)
+    write_audit_log(
+        db,
+        request=request,
+        actor_user_id=actor.id,
+        action="hr.training.enrollment_reject",
+        entity_type="hr_action",
+        entity_id=str(action.id),
+        meta={"target_user_id": str(action.target_user_id)},
     )
     return action
 

@@ -21,6 +21,7 @@ from app.models.skill import Skill
 from app.models.user import User, UserRole
 from app.models.user_skill import SkillSource, UserSkill
 from app.schemas.hr_action import HrActionPublic, MaterialReadingProgressUpdate, TrainingAssignmentProgressUpdate
+from app.services.training_catalog import resolve_official_course_link
 from app.services.training_assignments import (
     apply_material_reading_progress,
     apply_training_assignment_update,
@@ -704,16 +705,18 @@ def training_progress(
         .order_by(HrAction.updated_at.desc())
         .all()
     )
-    active, completed = [], []
+    active, completed, pending = [], [], []
     for r in rows:
         item = training_assignment_to_progress_item(r)
         if r.status == "completed":
             completed.append(item)
-        elif r.status == "cancelled":
+        elif r.status in ("cancelled", "rejected"):
             continue
+        elif r.status == "pending":
+            pending.append(item)
         else:
             active.append(item)
-    return {"active_courses": active, "completed_courses": completed}
+    return {"pending_requests": pending, "active_courses": active, "completed_courses": completed}
 
 
 @router.patch("/employee/training-assignments/{action_id}", response_model=HrActionPublic)
@@ -736,6 +739,8 @@ def employee_update_training_assignment(
             skill_source_on_complete=SkillSource.self,
             require_active_session_for_progress_change=True,
             require_minimum_verified_time_to_complete=True,
+            require_full_progress_for_completion=True,
+            allow_progress_pct_auto_complete=False,
         )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
@@ -770,6 +775,8 @@ def employee_download_training_course_material(
     action = db.query(HrAction).filter(HrAction.id == action_id).one_or_none()
     if not action or action.action_type != "training_assign" or action.target_user_id != user.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Training assignment not found")
+    if action.status == "pending":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Course content is available after HR approves your enrollment request.")
     upload_root = os.path.join(os.getcwd(), "uploads")
     path, fname, media_type = get_material_download_path(action, upload_root)
     return FileResponse(path, filename=fname, media_type=media_type)
@@ -835,42 +842,77 @@ def training_enroll(
     if user.role != UserRole.employee:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
     course = str(payload.get("course") or "").strip()
-    skill = str(payload.get("skill") or "").strip().lower()
+    skill = normalize_skill_name(str(payload.get("skill") or "").strip())
     if not course or not skill:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="course and skill are required")
+    provider = str(payload.get("provider") or "").strip() or None
+    official_url = str(payload.get("official_url") or "").strip() or None
+    course_id = str(payload.get("course_id") or "").strip() or None
+
     existing = (
         db.query(HrAction)
         .filter(
             HrAction.target_user_id == user.id,
             HrAction.action_type == "training_assign",
-            HrAction.status.in_(["assigned", "in_progress"]),
+            HrAction.status.in_(["pending", "assigned", "in_progress"]),
         )
         .all()
     )
     for row in existing:
         payload_row = row.payload or {}
-        if str(payload_row.get("program_name") or "").strip().lower() == course.lower():
-            return {"ok": True, "message": "Already enrolled"}
+        same_course = str(payload_row.get("program_name") or "").strip().lower() == course.lower()
+        same_skill = normalize_skill_name(str(payload_row.get("target_skill") or "")) == skill
+        if same_course or same_skill:
+            if row.status == "pending":
+                return {
+                    "ok": True,
+                    "status": "pending",
+                    "request_id": str(row.id),
+                    "message": "You already have a pending HR request for this training.",
+                }
+            return {
+                "ok": True,
+                "status": row.status,
+                "request_id": str(row.id),
+                "message": "You are already enrolled in this training. Open Training progress to continue.",
+            }
+
     now_iso = datetime.now(timezone.utc).isoformat()
+    link_meta = resolve_official_course_link(
+        catalog_course_id=course_id,
+        program_name=course,
+        target_skill=skill,
+        official_url=official_url,
+        provider=provider,
+    )
     action = HrAction(
         target_user_id=user.id,
         created_by_id=user.id,
         action_type="training_assign",
-        status="in_progress",
-        note="Self-enrolled from employee recommendations",
+        status="pending",
+        note="Employee enrollment request from recommendations",
         payload=ensure_training_attendance_defaults(
             {
                 "program_name": course,
                 "target_skill": skill,
-                "source": "employee_recommendation",
+                "source": "employee_enrollment_request",
+                "provider": link_meta.get("provider") or provider,
+                "official_url": link_meta.get("official_url"),
+                "catalog_course_id": link_meta.get("catalog_course_id") or course_id,
+                "requested_at": now_iso,
                 "progress_pct": 0,
-                "started_at": now_iso,
             }
         ),
     )
     db.add(action)
     db.commit()
-    return {"ok": True}
+    db.refresh(action)
+    return {
+        "ok": True,
+        "status": "pending",
+        "request_id": str(action.id),
+        "message": "Enrollment request sent to HR. You can track status under Training progress.",
+    }
 
 
 @router.get("/employee/career-paths")

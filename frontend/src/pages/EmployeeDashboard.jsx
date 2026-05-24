@@ -37,6 +37,47 @@ import { exportElementToPdf } from "../utils/pdfExport";
 import { getChartTheme } from "../utils/chartTheme";
 import { useThemeMode } from "../theme/ThemeModeContext";
 import { getApiErrorMessage } from "../utils/apiError";
+import OpenInNewIcon from "@mui/icons-material/OpenInNew";
+import LinkIcon from "@mui/icons-material/Link";
+
+function AICourseLinkPanel({ course }) {
+  if (!course?.official_url) return null;
+  const label = course.provider
+    ? `Open AI-recommended course (${course.provider})`
+    : "Open AI-recommended course";
+
+  return (
+    <Alert
+      severity="info"
+      icon={<LinkIcon fontSize="inherit" />}
+      sx={{ mt: 1.5, alignItems: "flex-start" }}
+      action={
+        <Button
+          size="small"
+          variant="contained"
+          color="primary"
+          href={course.official_url}
+          target="_blank"
+          rel="noopener noreferrer"
+          endIcon={<OpenInNewIcon />}
+          sx={{ whiteSpace: "nowrap", flexShrink: 0 }}
+        >
+          Open link
+        </Button>
+      }
+    >
+      <Typography variant="subtitle2" fontWeight={800} gutterBottom>
+        Official course link (AI matched)
+      </Typography>
+      <Typography variant="body2" sx={{ wordBreak: "break-all" }}>
+        {label}
+      </Typography>
+      <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
+        {course.official_url}
+      </Typography>
+    </Alert>
+  );
+}
 
 const SECTIONS = [
   { key: "home", label: "Dashboard home" },
@@ -70,6 +111,112 @@ function SectionPanel({ children }) {
   );
 }
 
+function TrainingRecommendationCard({ rec, onEnroll, enrollingKey }) {
+  const severityColor =
+    rec.severity === "high" ? "error" : rec.severity === "medium" ? "warning" : "default";
+  const enrollKey = `${rec.course_id || rec.course}-${rec.skill}`;
+  const isEnrolling = enrollingKey === enrollKey;
+
+  return (
+    <Paper
+      variant="outlined"
+      sx={{
+        p: { xs: 1.75, sm: 2 },
+        borderRadius: 2.5,
+        borderColor: "divider",
+        height: "100%"
+      }}
+    >
+      <Stack spacing={1.5}>
+        <Stack
+          direction={{ xs: "column", sm: "row" }}
+          spacing={1.5}
+          alignItems={{ xs: "stretch", sm: "flex-start" }}
+          justifyContent="space-between"
+        >
+          <Box sx={{ minWidth: 0, flex: 1 }}>
+            {rec.official_url ? (
+              <Typography
+                component="a"
+                href={rec.official_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                variant="subtitle1"
+                fontWeight={800}
+                sx={{ color: "primary.main", textDecoration: "none", display: "block", wordBreak: "break-word" }}
+              >
+                {rec.course}
+              </Typography>
+            ) : (
+              <Typography variant="subtitle1" fontWeight={800} sx={{ wordBreak: "break-word" }}>
+                {rec.course}
+              </Typography>
+            )}
+            <Typography variant="body2" color="text.secondary" sx={{ mt: 0.25 }}>
+              {rec.provider || "Official provider"} · {rec.duration_weeks} wk · {rec.mode}
+              {rec.certification ? " · certification" : ""}
+            </Typography>
+          </Box>
+          <Button
+            variant="contained"
+            size="small"
+            disabled={isEnrolling}
+            onClick={() => onEnroll(rec)}
+            sx={{ flexShrink: 0 }}
+          >
+            {isEnrolling ? "Sending…" : "Request from HR"}
+          </Button>
+        </Stack>
+
+        <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+          <Chip size="small" label={`Skill: ${rec.skill}`} />
+          {rec.severity ? <Chip size="small" color={severityColor} label={`${rec.severity} gap`} /> : null}
+          {rec.cv_in_experience ? <Chip size="small" color="success" variant="outlined" label="CV · experience" /> : null}
+        </Stack>
+
+        <Grid container spacing={1}>
+          {[
+            { label: "Required", value: rec.required_level ?? "—" },
+            { label: "Current", value: rec.current_level ?? "—" },
+            { label: "Gap", value: rec.gap ?? "—" },
+            { label: "Match", value: rec.match_pct != null ? `${rec.match_pct}%` : "—" },
+            { label: "CV evidence", value: rec.cv_relevance_pct != null ? `${rec.cv_relevance_pct}%` : "—" },
+            { label: "Semantic", value: rec.semantic_match_pct != null ? `${rec.semantic_match_pct}%` : "—" },
+            { label: "Est. closure", value: rec.projected_gap_reduction_pct != null ? `${rec.projected_gap_reduction_pct}%` : "—" },
+            { label: "Priority", value: rec.priority_score ?? "—" }
+          ].map((m) => (
+            <Grid item xs={6} sm={3} key={m.label}>
+              <Typography variant="caption" color="text.secondary" display="block">
+                {m.label}
+              </Typography>
+              <Typography variant="body2" fontWeight={700}>
+                {m.value}
+              </Typography>
+            </Grid>
+          ))}
+        </Grid>
+
+        <Box
+          sx={{
+            p: 1.5,
+            borderRadius: 2,
+            bgcolor: "action.hover",
+            borderLeft: "3px solid",
+            borderColor: "primary.main"
+          }}
+        >
+          <Typography variant="overline" color="text.secondary" sx={{ lineHeight: 1.4 }}>
+            Why this course
+          </Typography>
+          <Typography variant="body2" sx={{ mt: 0.5, lineHeight: 1.65, wordBreak: "break-word" }}>
+            {rec.rationale || "Recommended from your role skill gap profile."}
+          </Typography>
+        </Box>
+      </Stack>
+    </Paper>
+  );
+}
+
 export default function EmployeeDashboard() {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down("md"));
@@ -94,7 +241,11 @@ export default function EmployeeDashboard() {
   const [selectedProjectId, setSelectedProjectId] = useState("");
   const [recommendations, setRecommendations] = useState([]);
   const [trainingMeta, setTrainingMeta] = useState(null);
-  const [trainingProgress, setTrainingProgress] = useState({ active_courses: [], completed_courses: [] });
+  const [trainingProgress, setTrainingProgress] = useState({
+    pending_requests: [],
+    active_courses: [],
+    completed_courses: []
+  });
   const [careerPaths, setCareerPaths] = useState([]);
   const [goals, setGoals] = useState([]);
   const [notifications, setNotifications] = useState([]);
@@ -112,7 +263,6 @@ export default function EmployeeDashboard() {
     next_plan: ""
   });
   const reportsTableRef = useRef(null);
-  const [empTrainPct, setEmpTrainPct] = useState({});
   const [courseViewer, setCourseViewer] = useState(null);
   const [intel, setIntel] = useState(null);
   const [jobTitles, setJobTitles] = useState([]);
@@ -124,6 +274,7 @@ export default function EmployeeDashboard() {
   const [cvBusy, setCvBusy] = useState(false);
   const [careerBusy, setCareerBusy] = useState(false);
   const [snackbar, setSnackbar] = useState({ open: false, message: "" });
+  const [enrollingKey, setEnrollingKey] = useState("");
   const { mode } = useThemeMode();
   const { colors, tooltipStyle } = getChartTheme(mode);
   const gapChartRows = useMemo(() => (gaps?.chart || []).filter((r) => Number(r.gap) > 0).slice(0, 14), [gaps]);
@@ -131,6 +282,14 @@ export default function EmployeeDashboard() {
     const rows = gaps?.gaps || [];
     return rows;
   }, [gaps]);
+  const trainingCoursesWithAiLink = useMemo(() => {
+    const all = [
+      ...(trainingProgress.pending_requests || []),
+      ...(trainingProgress.active_courses || []),
+      ...(trainingProgress.completed_courses || [])
+    ];
+    return all.filter((c) => c.official_url);
+  }, [trainingProgress]);
 
   const headerKpis = useMemo(() => {
     if (!overview) return [];
@@ -193,7 +352,9 @@ export default function EmployeeDashboard() {
   async function refreshTrainingProgress() {
     try {
       const prog = await api.get("/analytics/employee/training-progress");
-      setTrainingProgress(prog.data || { active_courses: [], completed_courses: [] });
+      setTrainingProgress(
+        prog.data || { pending_requests: [], active_courses: [], completed_courses: [] }
+      );
     } catch {
       /* ignore — viewer still works */
     }
@@ -251,7 +412,9 @@ export default function EmployeeDashboard() {
         setSelectedProjectId("");
         setProjectReports([]);
       }
-      setTrainingProgress(prog.data || { active_courses: [], completed_courses: [] });
+      setTrainingProgress(
+        prog.data || { pending_requests: [], active_courses: [], completed_courses: [] }
+      );
       setCareerPaths(car.data || []);
       setGoals(gl.data || []);
       setNotifications(noti.data || []);
@@ -328,23 +491,31 @@ export default function EmployeeDashboard() {
     }
   }
 
-  async function enrollInTraining(course, skill) {
-    try {
-      await api.post("/analytics/employee/training-enroll", { course, skill });
-      await loadAll();
-    } catch (err) {
-      setError(err?.response?.data?.detail || "Failed to enroll in training");
-    }
-  }
-
-  async function saveTrainingProgress(actionId, fallbackPct) {
+  async function enrollInTraining(rec) {
+    const key = `${rec.course_id || rec.course}-${rec.skill}`;
+    setEnrollingKey(key);
     setError("");
     try {
-      const pct = Number(empTrainPct[actionId] ?? fallbackPct);
-      await api.patch(`/analytics/employee/training-assignments/${actionId}`, { progress_pct: pct });
+      const res = await api.post("/analytics/employee/training-enroll", {
+        course: rec.course,
+        skill: rec.skill,
+        provider: rec.provider,
+        official_url: rec.official_url,
+        course_id: rec.course_id
+      });
+      setSnackbar({
+        open: true,
+        message:
+          res.data?.message ||
+          "Enrollment request sent to HR. Track status under Training progress."
+      });
       await loadAll();
     } catch (err) {
-      setError(err?.response?.data?.detail || "Failed to update training progress");
+      const msg = getApiErrorMessage(err, "Failed to request training from HR");
+      setSnackbar({ open: true, message: msg });
+      setError(msg);
+    } finally {
+      setEnrollingKey("");
     }
   }
 
@@ -1237,23 +1408,23 @@ export default function EmployeeDashboard() {
                   {gapTableRows.length === 0 ? (
                     <Alert severity="info">Loading gap breakdown…</Alert>
                   ) : (
-                    <TableContainer>
-                      <Table size="small">
-                        <TableHead>
-                          <TableRow>
-                            <TableCell>Skill</TableCell>
-                            <TableCell align="right">Required</TableCell>
-                            <TableCell align="right">Current</TableCell>
+                  <TableContainer>
+                    <Table size="small">
+                      <TableHead>
+                        <TableRow>
+                          <TableCell>Skill</TableCell>
+                          <TableCell align="right">Required</TableCell>
+                          <TableCell align="right">Current</TableCell>
                             <TableCell align="right">CV level</TableCell>
-                            <TableCell align="right">Gap</TableCell>
+                          <TableCell align="right">Gap</TableCell>
                             <TableCell>CV evidence</TableCell>
                             <TableCell>Source</TableCell>
                             <TableCell align="right">Impact</TableCell>
-                            <TableCell>Severity</TableCell>
+                          <TableCell>Severity</TableCell>
                             <TableCell>Competency note</TableCell>
-                          </TableRow>
-                        </TableHead>
-                        <TableBody>
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
                           {gapTableRows.map((g) => (
                             <TableRow key={g.skill} sx={{ bgcolor: g.gap > 0 ? "action.hover" : undefined }}>
                               <TableCell>
@@ -1265,10 +1436,10 @@ export default function EmployeeDashboard() {
                                   <Chip size="small" label="experience" color="success" variant="outlined" sx={{ ml: 0.5 }} />
                                 ) : null}
                               </TableCell>
-                              <TableCell align="right">{g.required_level}</TableCell>
-                              <TableCell align="right">{g.current_level}</TableCell>
+                            <TableCell align="right">{g.required_level}</TableCell>
+                            <TableCell align="right">{g.current_level}</TableCell>
                               <TableCell align="right">{g.cv_inferred_level ?? "—"}</TableCell>
-                              <TableCell align="right">{g.gap}</TableCell>
+                            <TableCell align="right">{g.gap}</TableCell>
                               <TableCell>
                                 {g.cv_confidence_pct != null && g.cv_confidence_pct > 0
                                   ? `${g.cv_confidence_pct}%`
@@ -1280,30 +1451,30 @@ export default function EmployeeDashboard() {
                               <TableCell align="right">
                                 {g.weighted_gap_impact != null ? Number(g.weighted_gap_impact).toFixed(2) : "—"}
                               </TableCell>
-                              <TableCell>
-                                <Chip
-                                  size="small"
-                                  color={
-                                    g.severity === "high"
-                                      ? "error"
-                                      : g.severity === "medium"
+                            <TableCell>
+                              <Chip
+                                size="small"
+                                color={
+                                  g.severity === "high"
+                                    ? "error"
+                                    : g.severity === "medium"
+                                      ? "warning"
+                                      : g.severity === "low"
                                         ? "warning"
-                                        : g.severity === "low"
-                                          ? "warning"
-                                          : "success"
-                                  }
-                                  label={g.severity === "none" ? "meets target" : g.severity}
-                                  variant={g.severity === "none" ? "outlined" : "filled"}
-                                />
-                              </TableCell>
+                                        : "success"
+                                }
+                                label={g.severity === "none" ? "meets target" : g.severity}
+                                variant={g.severity === "none" ? "outlined" : "filled"}
+                              />
+                            </TableCell>
                               <TableCell sx={{ maxWidth: 320, whiteSpace: "normal" }}>
                                 {g.competency_note || g.explanation || "—"}
-                              </TableCell>
-                            </TableRow>
-                          ))}
-                        </TableBody>
-                      </Table>
-                    </TableContainer>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
                   )}
                   {gaps?.explainability?.rule ? (
                     <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 2 }}>
@@ -1519,74 +1690,112 @@ export default function EmployeeDashboard() {
                     </Alert>
                   ) : null}
                   {recommendations.length > 0 ? (
-                    <TableContainer>
-                      <Table size="small">
-                        <TableHead>
-                          <TableRow>
-                            <TableCell>Official course</TableCell>
-                            <TableCell>Provider</TableCell>
-                            <TableCell>Skill gap</TableCell>
-                            <TableCell align="right">Required</TableCell>
-                            <TableCell align="right">Current</TableCell>
-                            <TableCell align="right">Gap</TableCell>
-                            <TableCell align="right">CV evidence</TableCell>
-                            <TableCell align="right">Semantic</TableCell>
-                            <TableCell align="right">Est. gap closure</TableCell>
-                            <TableCell align="right">Priority</TableCell>
-                            <TableCell align="right">Match %</TableCell>
-                            <TableCell>Rationale</TableCell>
-                            <TableCell>Duration</TableCell>
-                            <TableCell align="right">Action</TableCell>
-                          </TableRow>
-                        </TableHead>
-                        <TableBody>
+                    <>
+                      <Box sx={{ display: { xs: "block", lg: "none" } }}>
+                        <Stack spacing={2}>
                           {recommendations.map((r, idx) => (
-                            <TableRow key={`${r.course_id || r.course}-${idx}`}>
-                              <TableCell sx={{ maxWidth: 220 }}>
-                                {r.official_url ? (
-                                  <Typography
-                                    component="a"
-                                    href={r.official_url}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    variant="body2"
-                                    fontWeight={600}
-                                    sx={{ color: "primary.main", textDecoration: "none" }}
-                                  >
-                                    {r.course}
-                                  </Typography>
-                                ) : (
-                                  r.course
-                                )}
-                              </TableCell>
-                              <TableCell sx={{ maxWidth: 160 }}>{r.provider || "—"}</TableCell>
-                              <TableCell>{r.skill}</TableCell>
-                              <TableCell align="right">{r.required_level ?? "—"}</TableCell>
-                              <TableCell align="right">{r.current_level ?? "—"}</TableCell>
-                              <TableCell align="right">{r.gap ?? "—"}</TableCell>
-                              <TableCell align="right">
-                                {r.cv_relevance_pct ?? 0}%
-                                {r.cv_in_experience ? " · exp" : ""}
-                              </TableCell>
-                              <TableCell align="right">{r.semantic_match_pct ?? "—"}%</TableCell>
-                              <TableCell align="right">{r.projected_gap_reduction_pct ?? "—"}%</TableCell>
-                              <TableCell align="right">{r.priority_score ?? "—"}</TableCell>
-                              <TableCell align="right">{r.match_pct}</TableCell>
-                              <TableCell sx={{ maxWidth: 320, whiteSpace: "normal" }}>{r.rationale || "—"}</TableCell>
-                              <TableCell>
-                                {r.duration_weeks} wk · {r.mode}
-                                {r.certification ? " · cert" : ""}
-                              </TableCell>
-                              <TableCell align="right">
-                                <Button size="small" variant="contained" onClick={() => enrollInTraining(r.course, r.skill)}>
-                                  Enroll
-                                </Button>
-                              </TableCell>
-                            </TableRow>
+                            <TrainingRecommendationCard
+                              key={`${r.course_id || r.course}-${idx}`}
+                              rec={r}
+                              onEnroll={enrollInTraining}
+                              enrollingKey={enrollingKey}
+                            />
                           ))}
-                        </TableBody>
-                      </Table>
-                    </TableContainer>
+                        </Stack>
+                      </Box>
+
+                      <TableContainer sx={{ display: { xs: "none", lg: "block" } }}>
+                        <Table size="small">
+                          <TableHead>
+                            <TableRow>
+                              <TableCell>Official course</TableCell>
+                              <TableCell>Skill</TableCell>
+                              <TableCell align="right">Req / Cur / Gap</TableCell>
+                              <TableCell align="right">Match</TableCell>
+                              <TableCell align="right">CV · Semantic</TableCell>
+                              <TableCell align="right">Est. closure</TableCell>
+                              <TableCell>Duration</TableCell>
+                              <TableCell align="right">Action</TableCell>
+                            </TableRow>
+                          </TableHead>
+                          <TableBody>
+                            {recommendations.map((r, idx) => (
+                              <React.Fragment key={`${r.course_id || r.course}-${idx}`}>
+                                <TableRow hover>
+                                  <TableCell sx={{ maxWidth: 260 }}>
+                                    {r.official_url ? (
+                                      <Typography
+                                        component="a"
+                                        href={r.official_url}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        variant="body2"
+                                        fontWeight={700}
+                                        sx={{ color: "primary.main", textDecoration: "none", wordBreak: "break-word" }}
+                                      >
+                                        {r.course}
+                                      </Typography>
+                                    ) : (
+                                      r.course
+                                    )}
+                                    <Typography variant="caption" color="text.secondary" display="block">
+                                      {r.provider || "—"}
+                                    </Typography>
+                                  </TableCell>
+                                  <TableCell>
+                                    <Chip size="small" label={r.skill} />
+                                  </TableCell>
+                                  <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>
+                                    {r.required_level ?? "—"} / {r.current_level ?? "—"} / {r.gap ?? "—"}
+                                  </TableCell>
+                                  <TableCell align="right">{r.match_pct}%</TableCell>
+                                  <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>
+                                    {r.cv_relevance_pct ?? 0}%{r.cv_in_experience ? " · exp" : ""} · {r.semantic_match_pct ?? "—"}%
+                                  </TableCell>
+                                  <TableCell align="right">{r.projected_gap_reduction_pct ?? "—"}%</TableCell>
+                                  <TableCell sx={{ whiteSpace: "nowrap" }}>
+                                    {r.duration_weeks} wk · {r.mode}
+                                  </TableCell>
+                                  <TableCell align="right">
+                                    <Button
+                                      size="small"
+                                      variant="contained"
+                                      disabled={enrollingKey === `${r.course_id || r.course}-${r.skill}`}
+                                      onClick={() => enrollInTraining(r)}
+                                    >
+                                      {enrollingKey === `${r.course_id || r.course}-${r.skill}`
+                                        ? "Sending…"
+                                        : "Request from HR"}
+                                    </Button>
+                                  </TableCell>
+                                </TableRow>
+                                <TableRow>
+                                  <TableCell colSpan={8} sx={{ py: 0, borderBottom: "1px solid", borderColor: "divider" }}>
+                                    <Box
+                                      sx={{
+                                        py: 1.5,
+                                        px: 0.5,
+                                        mb: 1,
+                                        borderLeft: "3px solid",
+                                        borderColor: "primary.main",
+                                        pl: 1.5
+                                      }}
+                                    >
+                                      <Typography variant="caption" color="text.secondary" fontWeight={700}>
+                                        Why this course
+                                      </Typography>
+                                      <Typography variant="body2" sx={{ mt: 0.35, lineHeight: 1.65, maxWidth: "100%" }}>
+                                        {r.rationale || "—"}
+                                      </Typography>
+                                    </Box>
+                                  </TableCell>
+                                </TableRow>
+                              </React.Fragment>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      </TableContainer>
+                    </>
                   ) : null}
                 </CardContent>
               </Card>
@@ -1596,9 +1805,39 @@ export default function EmployeeDashboard() {
               <Card variant="outlined"><CardContent>
                 <Typography variant="h6" fontWeight={800}>Training progress tracking</Typography>
                 <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-                  Start a <strong>learning session</strong> while you study. Open <strong>View course</strong> to read the PDF page by page (each page counts after you spend a few seconds on it) or watch the video with watch-time tracking — when a session is active, that progress can update your official course %. You still need <strong>minimum verified session time</strong> before marking complete.
+                  Start a <strong>learning session</strong> while you study. Open <strong>View course</strong> for HR-uploaded PDF or video — progress updates automatically from verified session time and content viewed. When progress reaches <strong>100%</strong>, click <strong>Mark complete</strong> to finish and receive your certificate.
                 </Typography>
+                {trainingCoursesWithAiLink.length > 0 ? (
+                  <Alert severity="success" sx={{ mt: 2 }}>
+                    {trainingCoursesWithAiLink.length} course{trainingCoursesWithAiLink.length === 1 ? "" : "s"} include an{" "}
+                    <strong>AI-recommended official link</strong> — look for the blue <strong>Open link</strong> button on each course card below.
+                  </Alert>
+                ) : null}
                 <Divider sx={{ my: 2 }} />
+                <Typography variant="subtitle1" fontWeight={700}>Pending HR approval</Typography>
+                <Stack spacing={1} sx={{ mb: 2 }}>
+                  {(trainingProgress.pending_requests || []).length === 0 ? (
+                    <Alert severity="info">No pending enrollment requests.</Alert>
+                  ) : null}
+                  {(trainingProgress.pending_requests || []).map((c) => (
+                    <Card variant="outlined" key={c.id}><CardContent>
+                      <Stack direction="row" justifyContent="space-between" alignItems="flex-start" flexWrap="wrap" gap={1}>
+                        <Box>
+                          <Typography fontWeight={700}>{c.course}</Typography>
+                          <Typography variant="body2" color="text.secondary">{c.skill}</Typography>
+                          <AICourseLinkPanel course={c} />
+                          <Stack direction="row" spacing={0.5} sx={{ mt: 0.5 }} flexWrap="wrap" useFlexGap>
+                            <Chip size="small" color="warning" label="Awaiting HR approval" />
+                            {c.source ? <Chip size="small" variant="outlined" label={c.source.replace(/_/g, " ")} /> : null}
+                          </Stack>
+                          <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
+                            HR will approve your request and upload course material (PDF or video). Use the official link above to start studying while you wait.
+                          </Typography>
+                        </Box>
+                      </Stack>
+                    </CardContent></Card>
+                  ))}
+                </Stack>
                 <Typography variant="subtitle1" fontWeight={700}>Active courses</Typography>
                 <Stack spacing={1} sx={{ mb: 2 }}>
                   {trainingProgress.active_courses.length === 0 ? (
@@ -1610,6 +1849,7 @@ export default function EmployeeDashboard() {
                         <Box>
                           <Typography fontWeight={700}>{c.course}</Typography>
                           <Typography variant="body2" color="text.secondary">{c.skill}</Typography>
+                          <AICourseLinkPanel course={c} />
                           <Stack direction="row" spacing={0.5} sx={{ mt: 0.5 }} alignItems="center" flexWrap="wrap" useFlexGap>
                             <Chip size="small" label={c.status || "assigned"} />
                             <Chip size="small" color={c.session_active ? "success" : "default"} label={c.session_active ? "In session" : (c.learning_state || "not_attending").replace(/_/g, " ")} />
@@ -1671,7 +1911,9 @@ export default function EmployeeDashboard() {
                             </Box>
                           ) : (
                             <Alert severity="info" sx={{ mt: 1.5 }} icon={false}>
-                              HR has not uploaded a course PDF or video yet. Ask HR to attach the official file from their HR dashboard.
+                              {c.official_url
+                                ? "HR has not uploaded a course PDF or video yet. Use the official course link above while you wait, or ask HR to attach the file from their dashboard."
+                                : "HR has not uploaded a course PDF or video yet. Ask HR to attach the official file from their HR dashboard."}
                             </Alert>
                           )}
                         </Box>
@@ -1681,34 +1923,58 @@ export default function EmployeeDashboard() {
                           ) : (
                             <Button size="small" variant="outlined" color="warning" onClick={() => endLearningSession(c.id)}>Pause / end session</Button>
                           )}
-                          <TextField
-                            size="small"
-                            type="number"
-                            label="Progress %"
-                            inputProps={{ min: 0, max: 100 }}
-                            sx={{ width: 110 }}
-                            value={empTrainPct[c.id] ?? c.progress_pct}
-                            onChange={(e) => setEmpTrainPct((prev) => ({ ...prev, [c.id]: Number(e.target.value) }))}
-                          />
-                          <Button size="small" variant="outlined" onClick={() => saveTrainingProgress(c.id, c.progress_pct)}>Save</Button>
-                          <Button size="small" variant="contained" color="success" onClick={() => markTrainingComplete(c.id)}>Mark complete</Button>
+                          {(Number(c.progress_pct) || 0) >= 100 ? (
+                            <Button
+                              size="small"
+                              variant="contained"
+                              color="success"
+                              onClick={() => markTrainingComplete(c.id)}
+                            >
+                              Mark complete
+                            </Button>
+                          ) : (
+                            <Button size="small" variant="outlined" color="success" disabled title="Reach 100% progress first">
+                              Mark complete (100% required)
+                            </Button>
+                          )}
                         </Stack>
                       </Stack>
                       <Stack spacing={0.5} sx={{ mt: 1 }}>
                         <Typography variant="caption" color="text.secondary">
-                          Course progress %
+                          Course progress % (auto from sessions & content)
                         </Typography>
-                        <LinearProgress variant="determinate" value={Number(empTrainPct[c.id] ?? c.progress_pct)} sx={{ height: 8, borderRadius: 1 }} />
+                        <LinearProgress variant="determinate" value={Number(c.progress_pct) || 0} sx={{ height: 8, borderRadius: 1 }} />
+                        <Typography variant="caption" fontWeight={700}>
+                          {Number(c.progress_pct) || 0}%
+                          {(Number(c.progress_pct) || 0) >= 100 ? " — ready to mark complete" : ""}
+                        </Typography>
                       </Stack>
                     </CardContent></Card>
                   ))}
                 </Stack>
                 <Typography variant="subtitle1" fontWeight={700}>Completed courses</Typography>
-                <TableContainer><Table size="small"><TableHead><TableRow><TableCell>Course</TableCell><TableCell>Skill</TableCell><TableCell>Certificate</TableCell><TableCell>Completed</TableCell></TableRow></TableHead><TableBody>
+                <TableContainer><Table size="small"><TableHead><TableRow><TableCell>Course</TableCell><TableCell>Skill</TableCell><TableCell>Official link</TableCell><TableCell>Certificate</TableCell><TableCell>Completed</TableCell></TableRow></TableHead><TableBody>
                   {trainingProgress.completed_courses.map((c) => (
                     <TableRow key={c.id}>
                       <TableCell>{c.course}</TableCell>
                       <TableCell>{c.skill}</TableCell>
+                      <TableCell>
+                        {c.official_url ? (
+                          <Typography
+                            component="a"
+                            href={c.official_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            variant="body2"
+                            fontWeight={600}
+                            sx={{ color: "primary.main", textDecoration: "none", wordBreak: "break-all" }}
+                          >
+                            {c.provider || "Open course"}
+                          </Typography>
+                        ) : (
+                          "—"
+                        )}
+                      </TableCell>
                       <TableCell>{c.certificate_status}</TableCell>
                       <TableCell>{c.completed_at ? String(c.completed_at).slice(0, 19) : "—"}</TableCell>
                     </TableRow>

@@ -14,7 +14,7 @@ from app.models.hr_action import HrAction
 from app.models.user import AccountStatus, User, UserRole
 from app.schemas.user import UserPublic
 from app.services.audit import write_audit_log
-from app.services.user_delete import delete_user_for_admin
+from app.services.user_delete import delete_user_for_admin, is_protected_admin
 from app.services.users import approve_user
 
 
@@ -295,8 +295,8 @@ def update_user_status(
     user = db.query(User).filter(User.id == user_id).one_or_none()
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-    if user.role == UserRole.system_admin:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot change system admin status")
+    if is_protected_admin(user):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot change administrator account status")
     user.status = AccountStatus(payload.status)
     db.commit()
     db.refresh(user)
@@ -360,6 +360,11 @@ def admin_update_user(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="System administrator role and status cannot be changed here.",
+        )
+    if user.role == UserRole.hr_admin and updates.get("status") is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="HR administrator status cannot be changed here.",
         )
 
     if updates.get("email"):

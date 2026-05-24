@@ -566,3 +566,66 @@ def courses_for_skill(canonical_skill: str) -> list[OfficialCourse]:
         if skill in c.description.lower() or skill in c.title.lower()
     ]
     return partial
+
+
+def course_by_id(course_id: str | None) -> OfficialCourse | None:
+    cid = (course_id or "").strip()
+    if not cid:
+        return None
+    for course in OFFICIAL_COURSE_CATALOG:
+        if course.course_id == cid:
+            return course
+    return None
+
+
+def course_by_title(program_name: str | None) -> OfficialCourse | None:
+    title = (program_name or "").strip().lower()
+    if not title:
+        return None
+    for course in OFFICIAL_COURSE_CATALOG:
+        if course.title.strip().lower() == title:
+            return course
+    for course in OFFICIAL_COURSE_CATALOG:
+        ct = course.title.strip().lower()
+        if title in ct or ct in title:
+            return course
+    return None
+
+
+def resolve_official_course_link(
+    *,
+    catalog_course_id: str | None = None,
+    program_name: str | None = None,
+    target_skill: str | None = None,
+    official_url: str | None = None,
+    provider: str | None = None,
+) -> dict:
+    """
+    Resolve the AI/catalog official course link for a training assignment.
+    Prefers stored payload values; falls back to catalog lookup by id, title, or skill.
+    """
+    url = (official_url or "").strip() or None
+    prov = (provider or "").strip() or None
+    cid = (catalog_course_id or "").strip() or None
+    course: OfficialCourse | None = None
+
+    if cid:
+        course = course_by_id(cid)
+    if not course and program_name:
+        course = course_by_title(program_name)
+    if not course and target_skill:
+        matches = courses_for_skill((target_skill or "").strip().lower())
+        if matches:
+            course = matches[0]
+
+    if course:
+        cid = cid or course.course_id
+        url = url or (course.url.strip() or None)
+        prov = prov or course.provider
+
+    return {
+        "official_url": url,
+        "provider": prov,
+        "catalog_course_id": cid,
+        "link_source": "catalog" if course else ("payload" if url else None),
+    }

@@ -15,7 +15,13 @@ from app.models.login_otp import LoginOtp
 from app.models.manager_project import EmployeeProjectDailyReport, ManagerProject, ProjectAssignment
 from app.models.master_data import CatalogRequest
 from app.models.user_skill import UserSkill
-from app.models.user import AccountStatus, User, UserRole
+from app.models.user import User, UserRole
+
+PROTECTED_ADMIN_ROLES = frozenset({UserRole.system_admin, UserRole.hr_admin})
+
+
+def is_protected_admin(user: User) -> bool:
+    return user.role in PROTECTED_ADMIN_ROLES
 
 
 def delete_user_for_admin(db: Session, *, admin_id: uuid.UUID, user_id: uuid.UUID) -> None:
@@ -29,18 +35,8 @@ def delete_user_for_admin(db: Session, *, admin_id: uuid.UUID, user_id: uuid.UUI
     if not target:
         raise ValueError("User not found")
 
-    if target.role == UserRole.system_admin and target.status == AccountStatus.active:
-        other_active = (
-            db.query(User)
-            .filter(
-                User.role == UserRole.system_admin,
-                User.status == AccountStatus.active,
-                User.id != user_id,
-            )
-            .count()
-        )
-        if other_active < 1:
-            raise ValueError("Cannot delete the only active system administrator")
+    if is_protected_admin(target):
+        raise ValueError("Cannot delete administrator accounts")
 
     db.query(User).filter(User.manager_id == user_id).update({User.manager_id: None}, synchronize_session=False)
     db.query(User).filter(User.approved_by_user_id == user_id).update({User.approved_by_user_id: None}, synchronize_session=False)

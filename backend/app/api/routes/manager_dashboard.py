@@ -23,7 +23,7 @@ from app.models.skill import Skill
 from app.models.user import AccountStatus, User, UserRole
 from app.models.user_skill import UserSkill
 from app.services.skill_normalization import normalize_skill_name
-from app.services.job_matching import match_employees_for_project
+from app.services.job_matching import _normalize_title, match_employees_for_project
 from app.services.workforce_analytics import manager_employee_performance, team_weighted_gap_score
 
 router = APIRouter()
@@ -437,13 +437,18 @@ def assign_employee(
             detail=f"Employee job title '{employee.job_title}' is not in project required job titles",
         )
     current = _workload_by_employee(db, manager.id).get(employee.id, 0.0)
-    if current >= 100:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Employee is already overloaded")
     existing = (
         db.query(ProjectAssignment)
         .filter(ProjectAssignment.project_id == project.id, ProjectAssignment.employee_id == employee.id)
         .one_or_none()
     )
+    existing_allocation = float(existing.allocation_pct or 0) if existing else 0.0
+    projected = current - existing_allocation + float(payload.allocation_pct)
+    if projected > 100:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Allocation would exceed 100% workload (current {round(current, 1)}%, requested {payload.allocation_pct}%).",
+        )
     if existing:
         existing.allocation_pct = payload.allocation_pct
     else:
