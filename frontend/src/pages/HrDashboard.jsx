@@ -17,6 +17,7 @@ import {
   InputLabel,
   LinearProgress,
   MenuItem,
+  Paper,
   Select,
   Snackbar,
   Stack,
@@ -56,6 +57,109 @@ const SECTIONS = [
 ];
 
 const HR_SECTION_KEYS = new Set(SECTIONS.map((s) => s.key));
+
+function TrainingProgramCard({ program, onAssign }) {
+  return (
+    <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
+      <Typography variant="subtitle2" fontWeight={800} sx={{ wordBreak: "break-word" }}>
+        {program.official_url ? (
+          <Typography component="a" href={program.official_url} target="_blank" rel="noopener noreferrer" variant="subtitle2" fontWeight={800}>
+            {program.program_name}
+          </Typography>
+        ) : (
+          program.program_name
+        )}
+      </Typography>
+      <Stack spacing={0.75} sx={{ mt: 1 }}>
+        <Typography variant="body2" color="text.secondary">Provider: {program.provider || "—"}</Typography>
+        <Typography variant="body2" color="text.secondary">Skill: {program.target_skill}</Typography>
+        <Grid container spacing={1}>
+          <Grid item xs={6}><Typography variant="caption" color="text.secondary">Employees needing</Typography><Typography variant="body2" fontWeight={700}>{program.employees_needing}</Typography></Grid>
+          <Grid item xs={6}><Typography variant="caption" color="text.secondary">Org gap</Typography><Typography variant="body2" fontWeight={700}>{program.org_gap_units}</Typography></Grid>
+          <Grid item xs={6}><Typography variant="caption" color="text.secondary">Suggested</Typography><Typography variant="body2" fontWeight={700}>${Number(program.suggested_investment || 0).toLocaleString()}</Typography></Grid>
+          <Grid item xs={6}><Typography variant="caption" color="text.secondary">Committed</Typography><Typography variant="body2" fontWeight={700}>${Number(program.committed_spend || 0).toLocaleString()}</Typography></Grid>
+        </Grid>
+      </Stack>
+      <Button size="small" variant="outlined" fullWidth sx={{ mt: 1.5 }} onClick={onAssign}>
+        Assign employee
+      </Button>
+    </Paper>
+  );
+}
+
+function EnrollmentRequestCard({ row, onApprove, onReject }) {
+  return (
+    <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
+      <Typography variant="subtitle2" fontWeight={800}>{row.employee_name}</Typography>
+      <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>{row.employee_email}</Typography>
+      <Typography variant="body2" fontWeight={600} sx={{ wordBreak: "break-word" }}>
+        {row.official_url ? (
+          <Typography component="a" href={row.official_url} target="_blank" rel="noopener noreferrer" variant="body2" fontWeight={600}>
+            {row.program_name}
+          </Typography>
+        ) : (
+          row.program_name
+        )}
+      </Typography>
+      <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>Skill: {row.target_skill} · {row.provider || "—"}</Typography>
+      <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
+        Requested: {row.requested_at ? new Date(row.requested_at).toLocaleString() : row.created_at ? new Date(row.created_at).toLocaleString() : "—"}
+      </Typography>
+      <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ mt: 1.5 }}>
+        <Button size="small" variant="contained" fullWidth onClick={onApprove}>Approve & upload</Button>
+        <Button size="small" color="error" variant="outlined" fullWidth onClick={onReject}>Reject</Button>
+      </Stack>
+    </Paper>
+  );
+}
+
+function LiveTrainingAssignmentCard({ row, progressValue, onProgressChange, onUploadClick, onSaveProgress, onMarkComplete }) {
+  return (
+    <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
+      <Typography variant="subtitle2" fontWeight={800}>{row.employee_name}</Typography>
+      <Typography variant="caption" color="text.secondary" display="block">{row.employee_email}</Typography>
+      <Divider sx={{ my: 1.25 }} />
+      <Stack spacing={0.75}>
+        <Typography variant="body2"><strong>Course:</strong> {row.program_name}</Typography>
+        <Typography variant="body2"><strong>Skill:</strong> {row.target_skill}</Typography>
+        <Typography variant="body2"><strong>Status:</strong> {row.status}</Typography>
+        <Typography variant="body2"><strong>Attendance:</strong> {(row.attendance_tier || "—").replace(/_/g, " ")}</Typography>
+        <Typography variant="body2"><strong>Time on course:</strong> {row.total_learning_display || "0s"}</Typography>
+        <Typography variant="body2"><strong>Live session:</strong> {row.session_active ? "Yes" : "No"}</Typography>
+      </Stack>
+      <TextField
+        size="small"
+        fullWidth
+        label="Progress %"
+        type="number"
+        inputProps={{ min: 0, max: 100 }}
+        value={progressValue}
+        onChange={(e) => onProgressChange(Number(e.target.value))}
+        sx={{ mt: 1.5 }}
+      />
+      <Button
+        size="small"
+        fullWidth
+        variant={row.course_material_filename ? "outlined" : "contained"}
+        color="primary"
+        startIcon={<CloudUploadIcon fontSize="small" />}
+        sx={{ mt: 1.5 }}
+        onClick={onUploadClick}
+      >
+        {row.course_material_filename ? "Replace PDF/video" : "Upload PDF/video"}
+      </Button>
+      {row.course_material_filename ? (
+        <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.75 }}>
+          File: {row.course_material_filename}
+        </Typography>
+      ) : null}
+      <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ mt: 1.5 }}>
+        <Button size="small" variant="outlined" fullWidth onClick={onSaveProgress}>Save progress</Button>
+        <Button size="small" variant="contained" color="success" fullWidth onClick={onMarkComplete}>Mark complete</Button>
+      </Stack>
+    </Paper>
+  );
+}
 
 export default function HrDashboard() {
   const theme = useTheme();
@@ -114,7 +218,9 @@ export default function HrDashboard() {
   const [trainingMaterialsEdit, setTrainingMaterialsEdit] = useState(null);
   const [complianceDialog, setComplianceDialog] = useState(null);
   const [complianceUntil, setComplianceUntil] = useState("");
+  const [complianceDueDate, setComplianceDueDate] = useState("");
   const [complianceNote, setComplianceNote] = useState("");
+  const [complianceRequiredCert, setComplianceRequiredCert] = useState("");
   const [promotionDialog, setPromotionDialog] = useState(null);
   const [promotionNote, setPromotionNote] = useState("");
   const [hrOpenTrainings, setHrOpenTrainings] = useState([]);
@@ -154,8 +260,7 @@ export default function HrDashboard() {
       setTopGaps(
         (gRes.data?.rows || []).slice(0, 20).map((r) => ({
           skill: r.skill,
-          total_gap: r.gap,
-          weighted_impact: r.weighted_gap_impact ?? 0
+          total_gap: r.gap
         }))
       );
       const dRes = await api.get("/analytics/hr/skill-gaps/by-department");
@@ -419,17 +524,34 @@ export default function HrDashboard() {
   async function submitComplianceRenewal() {
     if (!complianceDialog) return;
     setError("");
+    const isMissing = complianceDialog.isMissing || complianceDialog.certification === "None";
+    if (isMissing && !complianceRequiredCert.trim()) {
+      setError("Enter the required certification name for this employee.");
+      return;
+    }
+    if (isMissing && !complianceDueDate.trim()) {
+      setError("Enter a due date for the required certification.");
+      return;
+    }
     try {
-      await api.post("/analytics/hr/actions/compliance-renewal", {
+      const payload = {
         user_id: complianceDialog.userId,
         certification: complianceDialog.certification,
-        renewed_until: complianceUntil.trim() ? complianceUntil.trim() : null,
         note: complianceNote.trim() || null
-      });
+      };
+      if (isMissing) {
+        payload.required_certification = complianceRequiredCert.trim();
+        payload.due_date = complianceDueDate.trim();
+      } else {
+        payload.renewed_until = complianceUntil.trim() ? complianceUntil.trim() : null;
+      }
+      await api.post("/analytics/hr/actions/compliance-renewal", payload);
       setComplianceDialog(null);
       setComplianceUntil("");
+      setComplianceDueDate("");
       setComplianceNote("");
-      toastOk("Compliance renewal recorded.");
+      setComplianceRequiredCert("");
+      toastOk(isMissing ? "Required certification assigned to employee." : "Compliance renewal recorded.");
       await load();
     } catch (err) {
       setError(getApiErrorMessage(err, "Compliance update failed"));
@@ -562,11 +684,6 @@ export default function HrDashboard() {
     );
   }, [records, search]);
 
-  const filteredTopGaps = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return q ? topGaps.filter((g) => g.skill.toLowerCase().includes(q)) : topGaps;
-  }, [topGaps, search]);
-
   const filteredGapTable = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q) return gapTable;
@@ -593,8 +710,6 @@ export default function HrDashboard() {
     const departments = new Set(employees.map((r) => r.department)).size;
     const activeProjects = hrOverview?.active_projects != null ? Number(hrOverview.active_projects) : 0;
     const gapsCount = topGaps.length;
-    const gapTotal = topGaps.reduce((acc, g) => acc + (Number(g.weighted_impact) || Number(g.total_gap) || 0), 0);
-    const skillHealthScore = Math.max(0, Math.min(100, Math.round(100 - gapTotal * 1.5)));
     const trainingInProgress =
       hrOverview?.training_in_progress != null
         ? Number(hrOverview.training_in_progress)
@@ -604,7 +719,6 @@ export default function HrDashboard() {
       totalEmployees: employees.length,
       departments,
       activeProjects,
-      skillHealthScore,
       gapsCount,
       trainingInProgress,
       certificationsExpiringSoon
@@ -774,7 +888,7 @@ export default function HrDashboard() {
                   <Divider sx={{ my: 2 }} />
 
                   <Grid container spacing={2} sx={{ mb: 1 }}>
-                    <Grid item xs={12} sm={6} md={3}>
+                    <Grid item xs={12} sm={6} md={4}>
                       <Card variant="outlined">
                         <CardContent>
                           <Typography variant="body2" color="text.secondary">
@@ -786,7 +900,7 @@ export default function HrDashboard() {
                         </CardContent>
                       </Card>
                     </Grid>
-                    <Grid item xs={12} sm={6} md={3}>
+                    <Grid item xs={12} sm={6} md={4}>
                       <Card variant="outlined">
                         <CardContent>
                           <Typography variant="body2" color="text.secondary">
@@ -798,7 +912,7 @@ export default function HrDashboard() {
                         </CardContent>
                       </Card>
                     </Grid>
-                    <Grid item xs={12} sm={6} md={3}>
+                    <Grid item xs={12} sm={6} md={4}>
                       <Card variant="outlined">
                         <CardContent>
                           <Typography variant="body2" color="text.secondary">
@@ -809,18 +923,6 @@ export default function HrDashboard() {
                           </Typography>
                           <Typography variant="caption" color="text.secondary">
                             Pending project module integration
-                          </Typography>
-                        </CardContent>
-                      </Card>
-                    </Grid>
-                    <Grid item xs={12} sm={6} md={3}>
-                      <Card variant="outlined">
-                        <CardContent>
-                          <Typography variant="body2" color="text.secondary">
-                            Skill health score
-                          </Typography>
-                          <Typography variant="h4" fontWeight={900}>
-                            {overviewMetrics.skillHealthScore}
                           </Typography>
                         </CardContent>
                       </Card>
@@ -1265,24 +1367,46 @@ export default function HrDashboard() {
                       No organization skill gaps — workforce meets required profiles.
                     </Alert>
                   ) : (
-                    <TableContainer sx={{ mb: 2 }}>
-                      <Table size="small">
+                    <>
+                      <Box sx={{ display: { xs: "block", md: "none" }, mb: 2 }}>
+                        <Stack spacing={2}>
+                          {(trainingPlan.programs || []).map((p) => (
+                            <TrainingProgramCard
+                              key={`${p.target_skill}-${p.program_name}`}
+                              program={p}
+                              onAssign={() => {
+                                setTrainingUserId(activeEmployees[0]?.id || "");
+                                setTrainingNote("");
+                                setTrainingDialog({
+                                  program_name: p.program_name,
+                                  target_skill: p.target_skill,
+                                  cost: p.suggested_investment,
+                                  official_url: p.official_url,
+                                  provider: p.provider
+                                });
+                              }}
+                            />
+                          ))}
+                        </Stack>
+                      </Box>
+                      <TableContainer sx={{ display: { xs: "none", md: "block" }, mb: 2, overflowX: "auto", width: "100%", WebkitOverflowScrolling: "touch" }}>
+                        <Table size="small" sx={{ minWidth: 980 }}>
                         <TableHead>
                           <TableRow>
-                            <TableCell>Official course</TableCell>
-                            <TableCell>Provider</TableCell>
-                            <TableCell>Skill</TableCell>
+                            <TableCell sx={{ minWidth: 160 }}>Official course</TableCell>
+                            <TableCell sx={{ minWidth: 100 }}>Provider</TableCell>
+                            <TableCell sx={{ minWidth: 100 }}>Skill</TableCell>
                             <TableCell align="right">Employees needing</TableCell>
                             <TableCell align="right">Org gap</TableCell>
                             <TableCell align="right">Suggested investment</TableCell>
                             <TableCell align="right">Committed (DB)</TableCell>
-                            <TableCell align="right">Assign</TableCell>
+                            <TableCell align="right" sx={{ minWidth: 120 }}>Assign</TableCell>
                           </TableRow>
                         </TableHead>
                         <TableBody>
                           {(trainingPlan.programs || []).map((p) => (
                             <TableRow key={`${p.target_skill}-${p.program_name}`}>
-                              <TableCell sx={{ maxWidth: 200 }}>
+                              <TableCell sx={{ maxWidth: 220, wordBreak: "break-word" }}>
                                 {p.official_url ? (
                                   <Typography
                                     component="a"
@@ -1331,6 +1455,7 @@ export default function HrDashboard() {
                         </TableBody>
                       </Table>
                     </TableContainer>
+                    </>
                   )}
                   <Divider sx={{ my: 2 }} />
                   <Typography variant="subtitle1" fontWeight={800} sx={{ mb: 1 }}>
@@ -1342,16 +1467,29 @@ export default function HrDashboard() {
                   {hrPendingEnrollments.length === 0 ? (
                     <Alert severity="info" sx={{ mb: 2 }}>No pending enrollment requests.</Alert>
                   ) : (
-                    <TableContainer sx={{ mb: 2 }}>
-                      <Table size="small">
+                    <>
+                      <Box sx={{ display: { xs: "block", md: "none" }, mb: 2 }}>
+                        <Stack spacing={2}>
+                          {hrPendingEnrollments.map((row) => (
+                            <EnrollmentRequestCard
+                              key={row.id}
+                              row={row}
+                              onApprove={() => approveEnrollmentRequest(row)}
+                              onReject={() => rejectEnrollmentRequest(row)}
+                            />
+                          ))}
+                        </Stack>
+                      </Box>
+                      <TableContainer sx={{ display: { xs: "none", md: "block" }, mb: 2, overflowX: "auto", width: "100%", WebkitOverflowScrolling: "touch" }}>
+                        <Table size="small" sx={{ minWidth: 880 }}>
                         <TableHead>
                           <TableRow>
-                            <TableCell>Employee</TableCell>
-                            <TableCell>Course</TableCell>
+                            <TableCell sx={{ minWidth: 140 }}>Employee</TableCell>
+                            <TableCell sx={{ minWidth: 160 }}>Course</TableCell>
                             <TableCell>Skill</TableCell>
                             <TableCell>Provider</TableCell>
-                            <TableCell>Requested</TableCell>
-                            <TableCell align="right">Actions</TableCell>
+                            <TableCell sx={{ minWidth: 140 }}>Requested</TableCell>
+                            <TableCell align="right" sx={{ minWidth: 200 }}>Actions</TableCell>
                           </TableRow>
                         </TableHead>
                         <TableBody>
@@ -1361,7 +1499,7 @@ export default function HrDashboard() {
                                 <Typography fontWeight={600}>{row.employee_name}</Typography>
                                 <Typography variant="caption" color="text.secondary">{row.employee_email}</Typography>
                               </TableCell>
-                              <TableCell sx={{ maxWidth: 220 }}>
+                              <TableCell sx={{ maxWidth: 220, wordBreak: "break-word" }}>
                                 {row.official_url ? (
                                   <Typography
                                     component="a"
@@ -1386,19 +1524,22 @@ export default function HrDashboard() {
                                     ? new Date(row.created_at).toLocaleString()
                                     : "—"}
                               </TableCell>
-                              <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>
-                                <Button size="small" variant="contained" sx={{ mr: 0.5 }} onClick={() => approveEnrollmentRequest(row)}>
-                                  Approve & upload
-                                </Button>
-                                <Button size="small" color="error" variant="outlined" onClick={() => rejectEnrollmentRequest(row)}>
-                                  Reject
-                                </Button>
+                              <TableCell align="right">
+                                <Stack direction="row" spacing={0.5} justifyContent="flex-end" flexWrap="wrap" useFlexGap>
+                                  <Button size="small" variant="contained" onClick={() => approveEnrollmentRequest(row)}>
+                                    Approve & upload
+                                  </Button>
+                                  <Button size="small" color="error" variant="outlined" onClick={() => rejectEnrollmentRequest(row)}>
+                                    Reject
+                                  </Button>
+                                </Stack>
                               </TableCell>
                             </TableRow>
                           ))}
                         </TableBody>
                       </Table>
                     </TableContainer>
+                    </>
                   )}
                   <Divider sx={{ my: 2 }} />
                   <Stack direction={{ xs: "column", sm: "row" }} spacing={1} alignItems={{ xs: "stretch", sm: "center" }} justifyContent="space-between" sx={{ mb: 1 }}>
@@ -1438,36 +1579,68 @@ export default function HrDashboard() {
                   {hrOpenTrainings.length === 0 ? (
                     <Alert severity="info">No open training assignments.</Alert>
                   ) : (
-                    <TableContainer>
-                      <Table size="small">
+                    <>
+                      <Box sx={{ display: { xs: "block", md: "none" } }}>
+                        <Stack spacing={2}>
+                          {hrOpenTrainings.map((row) => (
+                            <LiveTrainingAssignmentCard
+                              key={row.id}
+                              row={row}
+                              progressValue={hrTrainPct[row.id] ?? row.progress_pct}
+                              onProgressChange={(value) => setHrTrainPct((prev) => ({ ...prev, [row.id]: value }))}
+                              onUploadClick={() =>
+                                setTrainingMaterialsEdit({
+                                  id: row.id,
+                                  label: `${row.employee_name} — ${row.program_name}`,
+                                  filename: row.course_material_filename || "",
+                                  kind: row.course_material_kind || ""
+                                })
+                              }
+                              onSaveProgress={() =>
+                                hrUpdateTrainingAssignment(row.id, {
+                                  progress_pct: Number(hrTrainPct[row.id] ?? row.progress_pct)
+                                })
+                              }
+                              onMarkComplete={() =>
+                                hrUpdateTrainingAssignment(row.id, {
+                                  mark_completed: true,
+                                  certificate_status: "Issued"
+                                })
+                              }
+                            />
+                          ))}
+                        </Stack>
+                      </Box>
+                      <TableContainer sx={{ display: { xs: "none", md: "block" }, overflowX: "auto", width: "100%", WebkitOverflowScrolling: "touch" }}>
+                        <Table size="small" sx={{ minWidth: 1280 }}>
                         <TableHead>
                           <TableRow>
-                            <TableCell>Employee</TableCell>
-                            <TableCell>Course</TableCell>
+                            <TableCell sx={{ minWidth: 140 }}>Employee</TableCell>
+                            <TableCell sx={{ minWidth: 140 }}>Course</TableCell>
                             <TableCell>Skill</TableCell>
                             <TableCell>Status</TableCell>
                             <TableCell>Attendance</TableCell>
                             <TableCell>Time on course</TableCell>
                             <TableCell>Live session</TableCell>
-                            <TableCell align="right">Progress %</TableCell>
-                            <TableCell>Course PDF / video</TableCell>
-                            <TableCell align="right">Actions</TableCell>
+                            <TableCell align="right" sx={{ minWidth: 100 }}>Progress %</TableCell>
+                            <TableCell sx={{ minWidth: 180 }}>Course PDF / video</TableCell>
+                            <TableCell align="right" sx={{ minWidth: 220 }}>Actions</TableCell>
                           </TableRow>
                         </TableHead>
                         <TableBody>
                           {hrOpenTrainings.map((row) => (
                             <TableRow key={row.id}>
-                              <TableCell>
+                              <TableCell sx={{ verticalAlign: "top" }}>
                                 <Typography fontWeight={600}>{row.employee_name}</Typography>
                                 <Typography variant="caption" color="text.secondary">{row.employee_email}</Typography>
                               </TableCell>
-                              <TableCell>{row.program_name}</TableCell>
-                              <TableCell>{row.target_skill}</TableCell>
-                              <TableCell>{row.status}</TableCell>
-                              <TableCell>{(row.attendance_tier || "—").replace(/_/g, " ")}</TableCell>
-                              <TableCell>{row.total_learning_display || "0s"}</TableCell>
-                              <TableCell>{row.session_active ? "Yes" : "No"}</TableCell>
-                              <TableCell align="right" sx={{ minWidth: 120 }}>
+                              <TableCell sx={{ verticalAlign: "top", wordBreak: "break-word" }}>{row.program_name}</TableCell>
+                              <TableCell sx={{ verticalAlign: "top" }}>{row.target_skill}</TableCell>
+                              <TableCell sx={{ verticalAlign: "top" }}>{row.status}</TableCell>
+                              <TableCell sx={{ verticalAlign: "top" }}>{(row.attendance_tier || "—").replace(/_/g, " ")}</TableCell>
+                              <TableCell sx={{ verticalAlign: "top", whiteSpace: "nowrap" }}>{row.total_learning_display || "0s"}</TableCell>
+                              <TableCell sx={{ verticalAlign: "top" }}>{row.session_active ? "Yes" : "No"}</TableCell>
+                              <TableCell align="right" sx={{ minWidth: 120, verticalAlign: "top" }}>
                                 <TextField
                                   size="small"
                                   type="number"
@@ -1476,7 +1649,7 @@ export default function HrDashboard() {
                                   onChange={(e) => setHrTrainPct((prev) => ({ ...prev, [row.id]: Number(e.target.value) }))}
                                 />
                               </TableCell>
-                              <TableCell sx={{ minWidth: 168 }}>
+                              <TableCell sx={{ minWidth: 168, verticalAlign: "top" }}>
                                 <Button
                                   size="small"
                                   variant={row.course_material_filename ? "outlined" : "contained"}
@@ -1490,11 +1663,12 @@ export default function HrDashboard() {
                                       kind: row.course_material_kind || ""
                                     })
                                   }
+                                  sx={{ whiteSpace: "nowrap" }}
                                 >
                                   {row.course_material_filename ? "Replace PDF/video" : "Upload PDF/video"}
                                 </Button>
                               </TableCell>
-                              <TableCell align="right">
+                              <TableCell align="right" sx={{ verticalAlign: "top" }}>
                                 <Stack direction="row" spacing={0.5} justifyContent="flex-end" flexWrap="wrap" useFlexGap>
                                   <Button
                                     size="small"
@@ -1527,6 +1701,7 @@ export default function HrDashboard() {
                         </TableBody>
                       </Table>
                     </TableContainer>
+                    </>
                   )}
                 </CardContent>
               </Card>
@@ -1539,62 +1714,19 @@ export default function HrDashboard() {
                     Organization-level skill gap analysis
                   </Typography>
                   <Divider sx={{ my: 2 }} />
+                  <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                    Organization shortage per skill (sum of max(0, required − current) across active employees).
+                  </Typography>
                   <TextField size="small" label="Search gap skill" value={search} onChange={(e) => setSearch(e.target.value)} sx={{ mb: 2 }} />
-                  <TableContainer sx={{ mb: 2 }}>
-                    <Table size="small">
-                      <TableHead>
-                        <TableRow>
-                          <TableCell>Skill</TableCell>
-                          <TableCell align="right">Required</TableCell>
-                          <TableCell align="right">Available</TableCell>
-                          <TableCell align="right">Gap</TableCell>
-                          <TableCell align="right">Weighted impact</TableCell>
-                          <TableCell>Severity</TableCell>
-                        </TableRow>
-                      </TableHead>
-                      <TableBody>
-                        {filteredGapTable.slice(0, 50).map((r) => (
-                          <TableRow key={r.skill}>
-                            <TableCell>{r.skill}</TableCell>
-                            <TableCell align="right">{r.required}</TableCell>
-                            <TableCell align="right">{r.available}</TableCell>
-                            <TableCell align="right">{r.gap}</TableCell>
-                            <TableCell align="right">{r.weighted_gap_impact != null ? r.weighted_gap_impact : "—"}</TableCell>
-                            <TableCell>
-                              <Alert
-                                severity={r.severity === "HIGH" ? "error" : r.severity === "MEDIUM" ? "warning" : "success"}
-                                icon={false}
-                                sx={{ py: 0.5 }}
-                              >
-                                {r.severity}
-                              </Alert>
-                            </TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  </TableContainer>
-                  <Box sx={{ width: "100%", height: 280, mb: 2 }}>
-                    <ResponsiveContainer>
-                      <BarChart data={filteredTopGaps.slice(0, 12)}>
-                        <CartesianGrid stroke={colors.grid} strokeDasharray="3 3" />
-                        <XAxis dataKey="skill" hide />
-                        <YAxis />
-                        <Tooltip contentStyle={tooltipStyle} />
-                        <Legend />
-                        <Bar dataKey="weighted_impact" fill={colors.warning} name="Weighted gap impact" />
-                      </BarChart>
-                    </ResponsiveContainer>
-                  </Box>
                   <Stack direction="row" justifyContent="flex-end" sx={{ mb: 1 }}>
                     <Button
                       size="small"
                       variant="outlined"
                       onClick={() =>
-                        exportRowsToCsv("hr-top-gaps.csv", filteredTopGaps, [
+                        exportRowsToCsv("hr-org-skill-gaps.csv", filteredGapTable, [
                           { header: "Skill", value: (r) => r.skill },
-                          { header: "Org gap (sum)", value: (r) => r.total_gap },
-                          { header: "Weighted impact", value: (r) => r.weighted_impact ?? "" }
+                          { header: "Org gap", value: (r) => r.gap },
+                          { header: "Severity", value: (r) => r.severity }
                         ])
                       }
                     >
@@ -1606,18 +1738,32 @@ export default function HrDashboard() {
                       <TableHead>
                         <TableRow>
                           <TableCell>Skill</TableCell>
-                          <TableCell align="right">Org gap (sum)</TableCell>
-                          <TableCell align="right">Weighted impact</TableCell>
+                          <TableCell align="right">Org gap</TableCell>
+                          <TableCell>Severity</TableCell>
                         </TableRow>
                       </TableHead>
                       <TableBody>
-                        {filteredTopGaps.map((g) => (
-                          <TableRow key={g.skill}>
-                            <TableCell>{g.skill}</TableCell>
-                            <TableCell align="right">{g.total_gap}</TableCell>
-                            <TableCell align="right">{g.weighted_impact ?? "—"}</TableCell>
+                        {filteredGapTable.length === 0 ? (
+                          <TableRow>
+                            <TableCell colSpan={3}>No organization skill gaps — workforce meets required profiles.</TableCell>
                           </TableRow>
-                        ))}
+                        ) : (
+                          filteredGapTable.slice(0, 50).map((r) => (
+                            <TableRow key={r.skill}>
+                              <TableCell>{r.skill}</TableCell>
+                              <TableCell align="right">{r.gap}</TableCell>
+                              <TableCell>
+                                <Alert
+                                  severity={r.severity === "HIGH" ? "error" : r.severity === "MEDIUM" ? "warning" : "success"}
+                                  icon={false}
+                                  sx={{ py: 0.5 }}
+                                >
+                                  {r.severity}
+                                </Alert>
+                              </TableCell>
+                            </TableRow>
+                          ))
+                        )}
                       </TableBody>
                     </Table>
                   </TableContainer>
@@ -1640,13 +1786,19 @@ export default function HrDashboard() {
                       <Alert severity="error">Missing certifications: {complianceData?.alerts?.missing || 0}</Alert>
                     </Grid>
                   </Grid>
+                  <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                    Suggested certifications are inferred from each employee&apos;s CV, job title, department, and skill gaps.
+                    Assign a required certification when none is on file — the employee will see it in their dashboard.
+                  </Typography>
                   <TableContainer>
                     <Table size="small">
                       <TableHead>
                         <TableRow>
                           <TableCell>Employee</TableCell>
-                          <TableCell>Certification</TableCell>
-                          <TableCell>Expiry Date</TableCell>
+                          <TableCell>CV certification</TableCell>
+                          <TableCell>Suggested (from CV &amp; profile)</TableCell>
+                          <TableCell>HR assigned</TableCell>
+                          <TableCell>Expiry</TableCell>
                           <TableCell>Status</TableCell>
                           <TableCell align="right">HR action</TableCell>
                         </TableRow>
@@ -1656,6 +1808,33 @@ export default function HrDashboard() {
                           <TableRow key={`${r.user_id || r.employee}-${idx}`}>
                             <TableCell>{r.employee}</TableCell>
                             <TableCell>{r.certification}</TableCell>
+                            <TableCell>
+                              {(r.suggested_certifications || []).length ? (
+                                <Stack spacing={0.5}>
+                                  {(r.suggested_certifications || []).slice(0, 2).map((s) => (
+                                    <Typography key={s.name} variant="caption" display="block">
+                                      {s.name}
+                                    </Typography>
+                                  ))}
+                                </Stack>
+                              ) : (
+                                "—"
+                              )}
+                            </TableCell>
+                            <TableCell>
+                              {(r.hr_required_certifications || []).length ? (
+                                <Stack spacing={0.5}>
+                                  {(r.hr_required_certifications || []).map((req) => (
+                                    <Typography key={req.id} variant="caption" display="block" fontWeight={600}>
+                                      {req.required_certification}
+                                      {req.due_date ? ` (due ${req.due_date})` : ""}
+                                    </Typography>
+                                  ))}
+                                </Stack>
+                              ) : (
+                                "—"
+                              )}
+                            </TableCell>
                             <TableCell>{r.expiry_date}</TableCell>
                             <TableCell>{r.status}</TableCell>
                             <TableCell align="right">
@@ -1663,17 +1842,26 @@ export default function HrDashboard() {
                                 size="small"
                                 variant="outlined"
                                 onClick={() => {
+                                  const isMissing = r.status === "Missing Certification" || r.certification === "None";
                                   setComplianceUntil("");
+                                  setComplianceDueDate("");
                                   setComplianceNote("");
+                                  setComplianceRequiredCert(
+                                    (r.suggested_certifications || [])[0]?.name || ""
+                                  );
                                   setComplianceDialog({
                                     userId: r.user_id,
                                     employee: r.employee,
-                                    certification: r.certification
+                                    certification: r.certification,
+                                    isMissing,
+                                    suggestedCertifications: r.suggested_certifications || []
                                   });
                                 }}
                                 disabled={!r.user_id}
                               >
-                                Record renewal
+                                {r.status === "Missing Certification" || (r.certification === "None" && r.status !== "Compliant")
+                                  ? "Assign required cert"
+                                  : "Record renewal"}
                               </Button>
                             </TableCell>
                           </TableRow>
@@ -2041,9 +2229,10 @@ export default function HrDashboard() {
         }}
         fullWidth
         maxWidth="sm"
+        fullScreen={isMobile}
       >
         <DialogTitle>Upload course PDF or video</DialogTitle>
-        <DialogContent>
+        <DialogContent dividers>
           <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
             Assignment: {trainingMaterialsEdit?.label}
           </Typography>
@@ -2067,8 +2256,8 @@ export default function HrDashboard() {
             accept=".pdf,.mp4,.webm,.mov,application/pdf,video/mp4,video/webm,video/quicktime"
             style={{ display: "none" }}
           />
-          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap sx={{ mb: 1 }}>
-            <Button variant="outlined" onClick={() => trainingMaterialFileRef.current?.click()}>
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={1} alignItems={{ xs: "stretch", sm: "center" }} flexWrap="wrap" useFlexGap sx={{ mb: 1 }}>
+            <Button variant="outlined" fullWidth={isMobile} onClick={() => trainingMaterialFileRef.current?.click()}>
               Choose PDF or video
             </Button>
           </Stack>
@@ -2076,8 +2265,9 @@ export default function HrDashboard() {
             Allowed: PDF, MP4, WebM, MOV. Max 80 MB. Uploading replaces any previous file.
           </Typography>
         </DialogContent>
-        <DialogActions>
+        <DialogActions sx={{ flexDirection: { xs: "column", sm: "row" }, gap: 1, px: 2, pb: 2 }}>
           <Button
+            fullWidth={isMobile}
             onClick={() => {
               if (trainingMaterialFileRef.current) trainingMaterialFileRef.current.value = "";
               setTrainingMaterialsEdit(null);
@@ -2085,43 +2275,104 @@ export default function HrDashboard() {
           >
             Cancel
           </Button>
-          <Button variant="contained" onClick={uploadTrainingCourseMaterial}>
+          <Button fullWidth={isMobile} variant="contained" onClick={uploadTrainingCourseMaterial}>
             Upload
           </Button>
         </DialogActions>
       </Dialog>
 
       <Dialog open={Boolean(complianceDialog)} onClose={() => setComplianceDialog(null)} fullWidth maxWidth="sm">
-        <DialogTitle>Record certification renewal</DialogTitle>
+        <DialogTitle>
+          {complianceDialog?.isMissing ? "Assign required certification" : "Record certification renewal"}
+        </DialogTitle>
         <DialogContent>
           <Typography variant="body2" sx={{ mb: 1 }}>
-            {complianceDialog?.employee} — {complianceDialog?.certification}
+            {complianceDialog?.employee} — CV on file: {complianceDialog?.certification || "None"}
           </Typography>
-          <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 2 }}>
-            For employees without a parsed certificate, keep certification as &quot;None&quot; so the renewal matches the dashboard row.
-          </Typography>
-          <TextField
-            margin="dense"
-            label="Valid until (YYYY-MM-DD), optional"
-            fullWidth
-            placeholder="Leave empty for default +365 days"
-            value={complianceUntil}
-            onChange={(e) => setComplianceUntil(e.target.value)}
-          />
-          <TextField
-            margin="dense"
-            label="Note (optional)"
-            fullWidth
-            multiline
-            minRows={2}
-            value={complianceNote}
-            onChange={(e) => setComplianceNote(e.target.value)}
-          />
+          {complianceDialog?.isMissing ? (
+            <>
+              <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 2 }}>
+                This employee has no certificate in their CV. Select or enter the certification HR requires, a due date, and a note.
+              </Typography>
+              {(complianceDialog?.suggestedCertifications || []).length > 0 ? (
+                <Box sx={{ mb: 2 }}>
+                  <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 0.75 }}>
+                    Suggested from CV &amp; profile
+                  </Typography>
+                  <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
+                    {(complianceDialog.suggestedCertifications || []).map((s) => (
+                      <Chip
+                        key={s.name}
+                        size="small"
+                        label={s.name}
+                        onClick={() => setComplianceRequiredCert(s.name)}
+                        color={complianceRequiredCert === s.name ? "primary" : "default"}
+                        variant={complianceRequiredCert === s.name ? "filled" : "outlined"}
+                      />
+                    ))}
+                  </Stack>
+                </Box>
+              ) : null}
+              <TextField
+                margin="dense"
+                label="Required certification"
+                fullWidth
+                required
+                value={complianceRequiredCert}
+                onChange={(e) => setComplianceRequiredCert(e.target.value)}
+                sx={{ mb: 1 }}
+              />
+              <TextField
+                margin="dense"
+                label="Due date (YYYY-MM-DD)"
+                fullWidth
+                required
+                type="date"
+                InputLabelProps={{ shrink: true }}
+                value={complianceDueDate}
+                onChange={(e) => setComplianceDueDate(e.target.value)}
+                sx={{ mb: 1 }}
+              />
+              <TextField
+                margin="dense"
+                label="Note to employee"
+                fullWidth
+                multiline
+                minRows={3}
+                value={complianceNote}
+                onChange={(e) => setComplianceNote(e.target.value)}
+                placeholder="Explain why this certification is required and any steps to complete it."
+              />
+            </>
+          ) : (
+            <>
+              <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 2 }}>
+                Record renewal for the certification parsed from the employee CV.
+              </Typography>
+              <TextField
+                margin="dense"
+                label="Valid until (YYYY-MM-DD), optional"
+                fullWidth
+                placeholder="Leave empty for default +365 days"
+                value={complianceUntil}
+                onChange={(e) => setComplianceUntil(e.target.value)}
+              />
+              <TextField
+                margin="dense"
+                label="Note (optional)"
+                fullWidth
+                multiline
+                minRows={2}
+                value={complianceNote}
+                onChange={(e) => setComplianceNote(e.target.value)}
+              />
+            </>
+          )}
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setComplianceDialog(null)}>Cancel</Button>
           <Button variant="contained" onClick={submitComplianceRenewal}>
-            Save
+            {complianceDialog?.isMissing ? "Assign to employee" : "Save renewal"}
           </Button>
         </DialogActions>
       </Dialog>

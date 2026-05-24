@@ -249,6 +249,7 @@ export default function EmployeeDashboard() {
   const [careerPaths, setCareerPaths] = useState([]);
   const [goals, setGoals] = useState([]);
   const [notifications, setNotifications] = useState([]);
+  const [complianceRequirements, setComplianceRequirements] = useState([]);
   const [profileEdit, setProfileEdit] = useState({ phone_number: "", country: "", primary_skill: "", headline: "" });
   const [skillForm, setSkillForm] = useState({ skill: "", level: 1 });
   const [assessmentForm, setAssessmentForm] = useState({ skill: "", self_score: 3, confidence: 3, years: 1 });
@@ -378,6 +379,7 @@ export default function EmployeeDashboard() {
         api.get("/analytics/employee/notifications"),
         intelPromise
       ]);
+      const complianceRes = await api.get("/analytics/employee/compliance-requirements").catch(() => ({ data: { requirements: [] } }));
       setOverview(ov.data);
       setProfile(pr.data);
       setIntel(intelRes.data);
@@ -418,6 +420,7 @@ export default function EmployeeDashboard() {
       setCareerPaths(car.data || []);
       setGoals(gl.data || []);
       setNotifications(noti.data || []);
+      setComplianceRequirements(complianceRes.data?.requirements || []);
       setProfileEdit({
         phone_number: pr.data?.basic?.phone || "",
         country: pr.data?.basic?.country || "",
@@ -2052,8 +2055,47 @@ export default function EmployeeDashboard() {
               <Card variant="outlined"><CardContent>
                 <Typography variant="h6" fontWeight={800}>Notifications</Typography>
                 <Divider sx={{ my: 2 }} />
+                {complianceRequirements.length > 0 ? (
+                  <Box sx={{ mb: 2 }}>
+                    <Typography variant="subtitle1" fontWeight={700} sx={{ mb: 1 }}>
+                      HR certification requirements
+                    </Typography>
+                    <TableContainer>
+                      <Table size="small">
+                        <TableHead>
+                          <TableRow>
+                            <TableCell>Required certification</TableCell>
+                            <TableCell>Due date</TableCell>
+                            <TableCell>HR note</TableCell>
+                            <TableCell>Assigned</TableCell>
+                          </TableRow>
+                        </TableHead>
+                        <TableBody>
+                          {complianceRequirements.map((req) => (
+                            <TableRow key={req.id}>
+                              <TableCell sx={{ fontWeight: 700 }}>{req.required_certification}</TableCell>
+                              <TableCell>{req.due_date || "—"}</TableCell>
+                              <TableCell>{req.note || "—"}</TableCell>
+                              <TableCell>{String(req.assigned_at || "").slice(0, 10)}</TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </TableContainer>
+                  </Box>
+                ) : null}
                 <Stack spacing={1}>
-                  {notifications.map((n, idx) => <Alert key={`${n.type}-${idx}`} severity={n.type?.includes("warning") ? "warning" : "info"}>{n.message}</Alert>)}
+                  {notifications.length === 0 && complianceRequirements.length === 0 ? (
+                    <Alert severity="info">No notifications right now.</Alert>
+                  ) : null}
+                  {notifications.map((n, idx) => (
+                    <Alert
+                      key={`${n.type}-${idx}`}
+                      severity={n.type === "compliance_requirement" ? "warning" : n.type?.includes("warning") ? "warning" : "info"}
+                    >
+                      {n.message}
+                    </Alert>
+                  ))}
                 </Stack>
               </CardContent></Card>
             ) : null}

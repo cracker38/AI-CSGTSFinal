@@ -21,6 +21,10 @@ from app.models.user_skill import UserSkill
 from app.ai.gap import compute_skill_gaps
 from app.services.required_skill_profile import required_skill_profile_with_weights
 from app.services.skill_normalization import normalize_skill_level_map, normalize_skill_name
+from app.services.compliance_certificates import (
+    active_hr_required_certifications,
+    suggest_required_certifications,
+)
 from app.services.workforce_analytics import (
     build_hr_training_planning,
     build_performance_support_row,
@@ -368,6 +372,8 @@ def hr_compliance(
     missing = 0
     for user, profile in rows:
         renewal_map = _compliance_renewal_map(profile)
+        suggestions = suggest_required_certifications(db, user, profile)
+        hr_required = active_hr_required_certifications(profile)
         certs = (profile.cv_extract or {}).get("certifications") or []
         if certs:
             cert_label = certs[0][:120]
@@ -392,6 +398,9 @@ def hr_compliance(
                     "certification": cert_label,
                     "expiry_date": expiry_display,
                     "status": st,
+                    "suggested_certifications": suggestions,
+                    "hr_required_certifications": hr_required,
+                    "has_cv_certificate": True,
                 }
             )
         else:
@@ -416,6 +425,9 @@ def hr_compliance(
                         "certification": "None",
                         "expiry_date": expiry_iso,
                         "status": st,
+                        "suggested_certifications": suggestions,
+                        "hr_required_certifications": hr_required,
+                        "has_cv_certificate": False,
                     }
                 )
             else:
@@ -427,6 +439,9 @@ def hr_compliance(
                         "certification": "None",
                         "expiry_date": "-",
                         "status": "Missing Certification",
+                        "suggested_certifications": suggestions,
+                        "hr_required_certifications": hr_required,
+                        "has_cv_certificate": False,
                     }
                 )
     return {"rows": out[:300], "alerts": {"expiring_soon": int(expiring_soon), "missing": int(missing)}}

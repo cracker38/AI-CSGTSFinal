@@ -16,7 +16,7 @@ from app.models.employee_profile import EmployeeProfile
 from app.models.hr_action import HrAction
 from app.models.user import AccountStatus, User, UserRole
 from app.models.user_skill import SkillSource
-from app.services.training_catalog import resolve_official_course_link
+from app.services.compliance_certificates import assign_hr_required_certification
 from app.services.training_assignments import (
     apply_training_assignment_update,
     ensure_training_attendance_defaults,
@@ -509,9 +509,53 @@ def mark_compliance_renewal(
 ) -> HrAction:
     user = _get_employee_or_400(db, body.user_id)
     profile = _profile_for_user(db, user.id)
-    valid_until = body.renewed_until or (date.today() + timedelta(days=365))
-
     ai = dict(profile.ai_profile or {})
+
+    cert_label = (body.certification or "").strip()
+    is_missing_row = cert_label.lower() in {"none", ""} or body.required_certification
+
+    if is_missing_row:
+        req_name = (body.required_certification or "").strip()
+        if not req_name:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Required certification name is required when the employee has no certificate on file.",
+            )
+        entry = assign_hr_required_certification(
+            profile,
+            required_certification=req_name,
+            due_date=body.due_date,
+            note=body.note,
+            assigned_by=actor.id,
+        )
+        db.add(profile)
+        action = HrAction(
+            target_user_id=user.id,
+            created_by_id=actor.id,
+            action_type="compliance_requirement",
+            status="completed",
+            note=body.note,
+            payload={
+                "required_certification": req_name,
+                "due_date": entry.get("due_date"),
+                "requirement_id": entry.get("id"),
+            },
+        )
+        db.add(action)
+        db.commit()
+        db.refresh(action)
+        write_audit_log(
+            db,
+            request=request,
+            actor_user_id=actor.id,
+            action="hr.compliance.requirement_assigned",
+            entity_type="user",
+            entity_id=str(user.id),
+            meta={"hr_action_id": str(action.id), "required_certification": req_name},
+        )
+        return action
+
+    valid_until = body.renewed_until or (date.today() + timedelta(days=365))
     renewals = list(ai.get("hr_compliance_renewals") or [])
     renewals.append(
         {
@@ -519,6 +563,7 @@ def mark_compliance_renewal(
             "valid_until": valid_until.isoformat(),
             "recorded_at": datetime.now(timezone.utc).isoformat(),
             "recorded_by": str(actor.id),
+            "note": body.note,
         }
     )
     ai["hr_compliance_renewals"] = renewals

@@ -72,6 +72,8 @@ class ComplianceRenewalRequest(BaseModel):
     certification: str = Field(..., min_length=1, max_length=500)
     renewed_until: date | None = None
     note: str | None = Field(default=None, max_length=2000)
+    required_certification: str | None = Field(default=None, min_length=2, max_length=500)
+    due_date: date | None = None
 
 
 class PromotionRecommendRequest(BaseModel):

@@ -38,7 +38,7 @@ from app.services.employee_gap_visualization import build_employee_skill_gap_vis
 from app.services.employee_intel import build_employee_dashboard_intel, build_story_bullets, sync_ai_cv_story
 from app.services.career_paths import build_employee_career_paths
 from app.services.training_recommendations import build_employee_training_recommendations
-from app.services.required_skill_profile import required_skill_profile_with_weights
+from app.services.compliance_certificates import active_hr_required_certifications
 from app.services.skill_normalization import normalize_skill_level_map, normalize_skill_name
 
 
@@ -961,6 +961,21 @@ def save_goal(
     return {"ok": True}
 
 
+@router.get("/employee/compliance-requirements")
+def employee_compliance_requirements(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    if user.role != UserRole.employee:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    profile = _employee_profile_or_ensure(db, user)
+    requirements = active_hr_required_certifications(profile)
+    return {
+        "requirements": requirements,
+        "count_pending": len(requirements),
+    }
+
+
 @router.get("/employee/notifications")
 def notifications(
     db: Session = Depends(get_db),
@@ -971,9 +986,23 @@ def notifications(
     profile = _employee_profile_or_ensure(db, user)
     ai = dict(profile.ai_profile or {})
     saved = list(ai.get("employee_notifications") or [])
+    compliance_msgs = []
+    for req in active_hr_required_certifications(profile):
+        due = req.get("due_date") or "no deadline set"
+        note = req.get("note") or ""
+        msg = f"HR requires certification: {req.get('required_certification')} (due {due})."
+        if note:
+            msg += f" Note: {note}"
+        compliance_msgs.append(
+            {
+                "type": "compliance_requirement",
+                "message": msg,
+                "created_at": req.get("assigned_at") or datetime.now(timezone.utc).isoformat(),
+            }
+        )
     if saved:
-        return saved
-    generated = []
+        return compliance_msgs + saved
+    generated = list(compliance_msgs)
     for g in my_skill_gaps(db=db, user=user).get("gaps", []):
         if g.get("gap", 0) > 1:
             generated.append(
