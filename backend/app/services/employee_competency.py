@@ -72,30 +72,35 @@ class EmployeeCvCompetency:
     quality_score: float
     exp_span: tuple[int, int] | None
     avg_mention_confidence: float
+    work_history_skills: frozenset[str]
 
 
 def build_employee_cv_competency(db: Session, user: User, profile: EmployeeProfile | None) -> EmployeeCvCompetency:
-    from app.services.cv import cv_text_for_user
+    from app.services.cv import cv_extract_for_user, cv_text_for_user
 
+    cv_extract = cv_extract_for_user(db, user, profile) if profile else {}
     cv_text = cv_text_for_user(db, user.id)
-    cv_extract = (profile.cv_extract if profile and isinstance(profile.cv_extract, dict) else {}) or {}
     mentions = extract_skill_mentions(cv_text) if cv_text else []
     if not mentions and cv_extract.get("skills_detail"):
         for row in cv_extract.get("skills_detail") or []:
             if not isinstance(row, dict):
                 continue
             skill = normalize_skill_name(str(row.get("skill") or ""))
-            if skill:
-                mentions.append(
-                    SkillMention(
-                        canonical=skill,
-                        confidence=float(row.get("confidence") or 0.55),
-                        keyword_matched=str(row.get("keyword_matched") or skill),
-                        span_start=0,
-                        span_end=0,
-                        in_skills_section=bool(row.get("in_skills_section")),
-                    )
+            if not skill:
+                continue
+            conf = float(row.get("confidence") or 0.55)
+            if row.get("in_experience_section") or row.get("mentioned_in_work_history"):
+                conf = min(0.96, conf + 0.1)
+            mentions.append(
+                SkillMention(
+                    canonical=skill,
+                    confidence=conf,
+                    keyword_matched=str(row.get("keyword_matched") or skill),
+                    span_start=0,
+                    span_end=0,
+                    in_skills_section=bool(row.get("in_skills_section")),
                 )
+            )
     mention_by_skill = {m.canonical: m for m in mentions}
     structure = analyze_cv_structure(cv_text)
     nlp_meta = cv_extract.get("nlp") if isinstance(cv_extract.get("nlp"), dict) else {}
@@ -108,6 +113,13 @@ def build_employee_cv_competency(db: Session, user: User, profile: EmployeeProfi
     avg_conf = sum(m.confidence for m in mentions) / len(mentions) if mentions else 0.0
     tier = _quality_tier(structure["structure_score"], doc_confidence, structure["char_count"])
     q_score = _quality_score(structure, doc_confidence, len(mentions))
+    work_history = frozenset(
+        normalize_skill_name(str(row.get("skill") or ""))
+        for row in (cv_extract.get("skills_detail") or [])
+        if isinstance(row, dict)
+        and (row.get("mentioned_in_work_history") or row.get("in_experience_section"))
+        and normalize_skill_name(str(row.get("skill") or ""))
+    )
     return EmployeeCvCompetency(
         cv_text=cv_text,
         mention_by_skill=mention_by_skill,
@@ -117,17 +129,30 @@ def build_employee_cv_competency(db: Session, user: User, profile: EmployeeProfi
         quality_score=q_score,
         exp_span=exp_span,
         avg_mention_confidence=round(avg_conf, 3),
+        work_history_skills=work_history,
     )
 
 
 def employee_context_document(user: User, profile: EmployeeProfile, cv_text: str) -> str:
     ai = profile.ai_profile or {}
     cv = profile.cv_extract or {}
+    exp_lines = []
+    for entry in (cv.get("experience") or [])[:6]:
+        if not isinstance(entry, dict):
+            continue
+        title = entry.get("title") or ""
+        company = entry.get("company") or ""
+        dates = entry.get("dates") or ""
+        if title or company:
+            exp_lines.append(f"{title} {company} {dates}".strip())
+        exp_lines.extend((entry.get("highlights") or [])[:3])
     parts = [
         user.job_title or "",
         user.department or "",
         user.primary_skill or "",
         ai.get("target_job_title") or "",
+        str(cv.get("profile_summary") or "")[:2000],
+        " ".join(exp_lines)[:12000],
         cv_text[:80000] if cv_text else (cv.get("text_preview") or "")[:4000],
         " ".join(str(s) for s in (cv.get("skills") or []) if str(s).strip()),
         " ".join(str(c) for c in (cv.get("certifications") or []) if str(c).strip()),
@@ -139,6 +164,8 @@ def skill_cv_evidence(competency: EmployeeCvCompetency, skill: str) -> dict:
     canon = normalize_skill_name(skill)
     mention = competency.mention_by_skill.get(canon)
     in_exp = mention_in_span(mention, competency.exp_span) if mention else False
+    if not in_exp and canon in competency.work_history_skills:
+        in_exp = True
     return {
         "skill": canon,
         "in_cv": mention is not None,
@@ -181,5 +208,5 @@ def competency_summary_dict(competency: EmployeeCvCompetency) -> dict:
         "avg_mention_confidence_pct": round(competency.avg_mention_confidence * 100, 1),
         "skills_detected": len(competency.mention_by_skill),
         "structure": competency.structure,
-        "engine": "cv_nlp_competency_v2",
+        "engine": "cv_nlp_competency_v3",
     }

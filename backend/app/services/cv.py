@@ -9,11 +9,7 @@ from datetime import datetime, timezone
 from pypdf import PdfReader
 from sqlalchemy.orm import Session
 
-from app.ai.cv_skill_nlp import (
-    document_nlp_confidence,
-    extract_skill_mentions,
-    mentions_to_extract_dicts,
-)
+from app.ai.cv_deep_parser import build_deep_cv_extract
 from app.models.cv_document import CvDocument
 from app.models.employee_profile import EmployeeProfile
 from app.models.skill import Skill
@@ -63,31 +59,6 @@ def _level_from_nlp_confidence(confidence: float) -> int:
     return 2
 
 
-def _extract_education(text: str) -> list[str]:
-    # Heuristic: capture lines containing degree keywords.
-    lines = [l.strip() for l in text.splitlines() if l.strip()]
-    degree_words = ("bsc", "msc", "phd", "bachelor", "master", "degree", "university", "college")
-    edu = [l for l in lines if any(w in l.lower() for w in degree_words)]
-    return edu[:10]
-
-
-def _extract_certifications(text: str) -> list[str]:
-    lines = [l.strip() for l in text.splitlines() if l.strip()]
-    cert_words = ("certified", "certification", "certificate", "coursera", "udemy", "aws", "azure", "google")
-    certs = [l for l in lines if any(w in l.lower() for w in cert_words)]
-    return certs[:15]
-
-
-def _extract_experience_years(text: str) -> int | None:
-    m = re.search(r"(\d{1,2})\+?\s+years? of experience", text.lower())
-    if not m:
-        return None
-    try:
-        return int(m.group(1))
-    except ValueError:
-        return None
-
-
 def _compute_context_alignment(
     *,
     extracted_skills: list[str],
@@ -123,6 +94,56 @@ def _compute_context_alignment(
         "primary_skill_in_cv": bool(primary_norm and primary_norm in normalized),
         "missing_priority_skills": missing_ranked[:10],
     }
+
+
+def raw_cv_text_for_user(db: Session, user_id: uuid.UUID) -> str:
+    """Line-preserving résumé text for deep parsing (PDF extract preferred)."""
+    doc = (
+        db.query(CvDocument)
+        .filter(CvDocument.user_id == user_id)
+        .order_by(CvDocument.created_at.desc())
+        .first()
+    )
+    if doc and doc.stored_path:
+        raw, _ = _extract_text_from_pdf(doc.stored_path)
+        if raw.strip():
+            return raw[:80000]
+    profile = db.query(EmployeeProfile).filter(EmployeeProfile.user_id == user_id).one_or_none()
+    cv = (profile.cv_extract if profile and isinstance(profile.cv_extract, dict) else {}) or {}
+    preview = str(cv.get("text_preview") or "").strip()
+    return preview[:80000]
+
+
+def cv_extract_for_user(
+    db: Session,
+    user: User,
+    profile: EmployeeProfile | None,
+    *,
+    persist_upgrade: bool = True,
+) -> dict:
+    """Return stored deep extract, upgrading legacy uploads once when PDF is available."""
+    cv = (profile.cv_extract if profile and isinstance(profile.cv_extract, dict) else {}) or {}
+    pipeline = (cv.get("nlp") or {}).get("pipeline")
+    if pipeline == "cv_deep_nlp_v4" and cv.get("skills_detail"):
+        return cv
+    raw = raw_cv_text_for_user(db, user.id)
+    if len(raw.strip()) < 40:
+        return cv
+    upgraded = build_deep_cv_extract(raw)
+    if cv.get("pdf"):
+        upgraded["pdf"] = cv["pdf"]
+    if persist_upgrade and profile is not None:
+        profile.cv_extract = upgraded
+        ai_profile = dict(profile.ai_profile or {})
+        doc_conf = float((upgraded.get("nlp") or {}).get("document_confidence") or 0.0)
+        skills = upgraded.get("skills") or []
+        ai_profile["confidence"] = doc_conf if skills else ai_profile.get("confidence", 0.25)
+        ai_profile["nlp_pipeline"] = (upgraded.get("nlp") or {}).get("pipeline") or "cv_deep_nlp_v4"
+        profile.ai_profile = ai_profile
+        db.add(profile)
+        db.commit()
+        sync_ai_cv_story(db, profile, user)
+    return upgraded
 
 
 def cv_text_for_user(db: Session, user_id: uuid.UUID) -> str:
@@ -163,33 +184,12 @@ def save_and_process_cv(
         f.write(pdf_bytes)
 
     raw_text, pdf_meta = _extract_text_from_pdf(stored_path)
-    mentions = extract_skill_mentions(raw_text)
-    skills = [m.canonical for m in mentions]
-    skills_detail = mentions_to_extract_dicts(mentions)
-    doc_conf = document_nlp_confidence(mentions, len(raw_text))
-    section_hits = any(m.get("in_skills_section") for m in skills_detail)
+    extract = build_deep_cv_extract(raw_text)
+    extract["pdf"] = pdf_meta
 
-    education = _extract_education(raw_text)
-    certifications = _extract_certifications(raw_text)
-    years_exp = _extract_experience_years(raw_text)
-
-    extract = {
-        "skills": skills,
-        "skills_detail": skills_detail,
-        "nlp": {
-            "pipeline": "taxonomy_regex_v1",
-            "document_confidence": doc_conf,
-            "skills_section_detected": section_hits,
-            "char_count": len(raw_text),
-            "mention_count": len(mentions),
-        },
-        "pdf": pdf_meta,
-        "education": education,
-        "certifications": certifications,
-        "experience_years": years_exp,
-        "text_preview": _normalize_text(raw_text)[:2000],
-        "text_for_ml": _normalize_text(raw_text)[:80000],
-    }
+    skills = extract.get("skills") or []
+    skills_detail = extract.get("skills_detail") or []
+    doc_conf = float((extract.get("nlp") or {}).get("document_confidence") or 0.0)
 
     doc = CvDocument(
         user_id=user.id,
@@ -216,7 +216,7 @@ def save_and_process_cv(
         ai_profile["suggested_skills"] = [s for s in skills if s and s != pk][:15]
         ai_profile["primary_skill_validated"] = role_context["primary_skill_in_cv"] if pk else False
         ai_profile["confidence"] = doc_conf if skills else (0.25 if raw_text.strip() else 0.15)
-        ai_profile["nlp_pipeline"] = "taxonomy_regex_v1"
+        ai_profile["nlp_pipeline"] = (extract.get("nlp") or {}).get("pipeline") or "cv_deep_nlp_v4"
         ai_profile["role_context_alignment"] = role_context
         ai_profile["profile_personalization_key"] = (
             f"{normalize_skill_name(user.primary_skill)}|{user.job_title.strip().lower()}|{user.department.strip().lower()}"
@@ -224,7 +224,11 @@ def save_and_process_cv(
         profile.ai_profile = ai_profile
         sync_ai_cv_story(db, profile, user)
 
-    conf_by_skill = {m.canonical: m.confidence for m in mentions}
+    conf_by_skill = {
+        str(row.get("skill")): float(row.get("confidence") or 0.7)
+        for row in skills_detail
+        if isinstance(row, dict) and row.get("skill")
+    }
 
     # Persist skills into skill inventory (canonical naming).
     for s in skills:

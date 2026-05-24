@@ -29,7 +29,7 @@ from app.models.manager_project import (
 from app.models.skill import Skill
 from app.models.user import User
 from app.models.user_skill import UserSkill
-from app.services.cv import cv_text_for_user
+from app.services.cv import cv_extract_for_user, cv_text_for_user
 from app.services.skill_normalization import normalize_skill_name
 
 _HAVE_SKLEARN = True
@@ -187,8 +187,8 @@ def _cv_quality_tier(structure_score: float, doc_confidence: float, char_count: 
 
 
 def _employee_cv_bundle(db: Session, employee: User, profile: EmployeeProfile | None) -> dict:
+    cv_extract = cv_extract_for_user(db, employee, profile) if profile else {}
     cv_text = cv_text_for_user(db, employee.id)
-    cv_extract = (profile.cv_extract if profile and isinstance(profile.cv_extract, dict) else {}) or {}
     mentions = extract_skill_mentions(cv_text) if cv_text else []
     if not mentions and cv_extract.get("skills_detail"):
         # Rehydrate lightweight mentions from stored extract when PDF text unavailable.
@@ -243,17 +243,26 @@ def _employee_cv_bundle(db: Session, employee: User, profile: EmployeeProfile | 
     }
 
 
-def _registration_cv_intel(ai_profile: dict | None) -> dict:
+def _registration_cv_intel(ai_profile: dict | None, cv_extract: dict | None = None) -> dict:
     ai = ai_profile if isinstance(ai_profile, dict) else {}
+    cv = cv_extract if isinstance(cv_extract, dict) else {}
     role_ctx = ai.get("role_context_alignment") if isinstance(ai.get("role_context_alignment"), dict) else {}
     confidence = ai.get("confidence")
+    deep = cv.get("deep_intel") if isinstance(cv.get("deep_intel"), dict) else {}
+    latest = (cv.get("experience") or [{}])[0] if cv.get("experience") else {}
     return {
-        "pipeline": ai.get("nlp_pipeline") or "taxonomy_regex_v1",
+        "pipeline": ai.get("nlp_pipeline") or (cv.get("nlp") or {}).get("pipeline") or "cv_deep_nlp_v4",
         "parser_confidence": round(float(confidence), 3) if confidence is not None else None,
         "parser_confidence_pct": round(float(confidence) * 100.0, 1) if confidence is not None else None,
         "primary_skill_validated": ai.get("primary_skill_validated"),
         "role_context_alignment": role_ctx,
         "suggested_skills": (ai.get("suggested_skills") or [])[:12],
+        "experience_years": cv.get("experience_years") or deep.get("experience_span_years"),
+        "latest_role": deep.get("latest_role") or (latest.get("title") if isinstance(latest, dict) else None),
+        "latest_company": deep.get("latest_company") or (latest.get("company") if isinstance(latest, dict) else None),
+        "skills_in_work_history": deep.get("skills_in_work_history_count", 0),
+        "profile_summary_present": deep.get("profile_summary_present", False),
+        "sections_detected": deep.get("sections_detected") or [],
     }
 
 
@@ -360,8 +369,14 @@ def _build_match_analysis_bullets(
         )
     if semantic_pct is not None:
         bullets.append(f"Résumé semantic similarity to project brief: {semantic_pct:.0f}% (TF–IDF).")
+    if cv_intel.get("latest_role"):
+        bullets.append(f"Latest parsed role: {cv_intel['latest_role']}" + (f" at {cv_intel['latest_company']}" if cv_intel.get("latest_company") else "") + ".")
+    if cv_intel.get("experience_years"):
+        bullets.append(f"Career depth from CV timelines: ~{cv_intel['experience_years']} years.")
+    if cv_intel.get("skills_in_work_history"):
+        bullets.append(f"{cv_intel['skills_in_work_history']} catalog skills substantiated in work-history bullets.")
     if cv_intel.get("parser_confidence_pct") is not None:
-        bullets.append(f"Registration NLP parser confidence: {cv_intel['parser_confidence_pct']:.0f}%.")
+        bullets.append(f"Deep CV parser confidence: {cv_intel['parser_confidence_pct']:.0f}%.")
     if cv_intel.get("primary_skill_validated") is True:
         bullets.append("Declared primary skill is validated in uploaded CV text.")
     elif cv_intel.get("primary_skill_validated") is False:
@@ -450,7 +465,7 @@ def match_employees_for_project(
         mention_by_skill = cv_bundle["mention_by_skill"]
         exp_span = cv_bundle["exp_span"]
         ai_profile = (profile.ai_profile if profile and isinstance(profile.ai_profile, dict) else {}) or {}
-        cv_intel = _registration_cv_intel(ai_profile)
+        cv_intel = _registration_cv_intel(ai_profile, cv_extract)
         project_context, skill_breakdown = _compute_project_skill_breakdown(
             skill_rows=req.skill_rows,
             current=current,
@@ -512,6 +527,9 @@ def match_employees_for_project(
         cert_score = cert_hits / max(1, len(req.skill_names)) if req.has_requirements else 0.0
 
         experience_years = int(cv_extract.get("experience_years") or 0)
+        deep = cv_extract.get("deep_intel") if isinstance(cv_extract.get("deep_intel"), dict) else {}
+        if experience_years <= 0 and deep.get("experience_span_years"):
+            experience_years = int(deep["experience_span_years"])
         if experience_years <= 0 and cv_text:
             m = re.search(r"(\d{1,2})\+?\s+years?", cv_text.lower())
             if m:
@@ -691,7 +709,7 @@ def match_employees_for_project(
                     "required_job_titles": sorted(req.required_titles),
                 },
                 "skill_breakdown": skill_breakdown,
-                "engine": "registration_cv_nlp_project_v3",
+                "engine": "registration_cv_nlp_project_v4",
             }
         )
 
@@ -728,9 +746,10 @@ def build_project_match_report(
             "status": project.status.value if hasattr(project.status, "value") else str(project.status),
         },
         "analysis_profile": {
-            "pipeline": "taxonomy_regex_v1",
-            "engine": "registration_cv_nlp_project_v3",
+            "pipeline": "cv_deep_nlp_v4",
+            "engine": "registration_cv_nlp_project_v4",
             "signals": [
+                "deep_cv_sections_and_timeline",
                 "registration_cv_intel",
                 "project_department_and_titles",
                 "weighted_project_skills",

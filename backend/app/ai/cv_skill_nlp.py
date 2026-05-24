@@ -171,6 +171,7 @@ def extract_skill_mentions(text: str) -> list[SkillMention]:
         return []
 
     section = _skills_section_range(text)
+    exp_span = experience_section_range(text)
     ordered = sorted(SKILL_KEYWORDS, key=lambda x: (len(x), x), reverse=True)
     claimed: list[tuple[int, int]] = []
     mentions: list[SkillMention] = []
@@ -186,9 +187,12 @@ def extract_skill_mentions(text: str) -> list[SkillMention]:
             if not canon:
                 continue
             in_sec = bool(section and section[0] <= a < section[1])
+            in_exp = bool(exp_span and exp_span[0] <= a < exp_span[1])
             base = 0.52
             if in_sec:
                 base += 0.28
+            if in_exp:
+                base += 0.14
             if len(kw) >= 12:
                 base += 0.06
             elif len(kw) >= 6:
@@ -232,13 +236,18 @@ def document_nlp_confidence(mentions: list[SkillMention], text_len: int) -> floa
     return round(min(0.94, 0.25 + avg * 0.55 * length_factor), 3)
 
 
-def mentions_to_extract_dicts(mentions: list[SkillMention]) -> list[dict]:
+def mentions_to_extract_dicts(
+    mentions: list[SkillMention],
+    *,
+    exp_span: tuple[int, int] | None = None,
+) -> list[dict]:
     return [
         {
             "skill": m.canonical,
             "confidence": m.confidence,
             "keyword_matched": m.keyword_matched,
             "in_skills_section": m.in_skills_section,
+            "in_experience_section": mention_in_span(m, exp_span) if exp_span else False,
         }
         for m in mentions
     ]

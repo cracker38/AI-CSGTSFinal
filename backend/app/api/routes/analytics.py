@@ -469,9 +469,12 @@ def employee_profile(
     if user.role != UserRole.employee:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
     profile = _employee_profile_or_ensure(db, user)
-    cv_extract = profile.cv_extract or {}
+    from app.services.cv import cv_extract_for_user
+
+    cv_extract = cv_extract_for_user(db, user, profile)
     ai = profile.ai_profile or {}
     nlp = cv_extract.get("nlp") or {}
+    deep = cv_extract.get("deep_intel") if isinstance(cv_extract.get("deep_intel"), dict) else {}
     story_h, story_sub, analysis_bullets = build_story_bullets(db, user, profile)
     return {
         "basic": {
@@ -503,8 +506,12 @@ def employee_profile(
             "skills": (cv_extract.get("skills") or [])[:20],
             "certifications": (cv_extract.get("certifications") or [])[:20],
             "experience": (cv_extract.get("experience") or [])[:20],
+            "profile_summary": (cv_extract.get("profile_summary") or "")[:500],
+            "education_entries": (cv_extract.get("education_entries") or [])[:10],
         },
         "experience_timeline": (cv_extract.get("experience") or [])[:20],
+        "cv_deep_intel": deep,
+        "experience_years": cv_extract.get("experience_years") or deep.get("experience_span_years"),
     }
 
 

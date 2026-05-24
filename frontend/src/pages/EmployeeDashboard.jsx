@@ -1296,6 +1296,33 @@ export default function EmployeeDashboard() {
                       No high-priority missing skills detected for the selected job/department context.
                     </Typography>
                   )}
+                  <Typography variant="subtitle2" sx={{ mt: 2 }}>
+                    Work history (parsed)
+                  </Typography>
+                  {(profile?.experience_timeline || []).length ? (
+                    <Stack spacing={1} sx={{ mb: 2 }}>
+                      {(profile.experience_timeline || []).slice(0, 5).map((e, idx) => (
+                        <Paper key={`exp-${idx}`} variant="outlined" sx={{ p: 1.25, borderRadius: 2 }}>
+                          <Typography variant="body2" fontWeight={700}>
+                            {[e.title, e.company].filter(Boolean).join(" · ") || "Role"}
+                          </Typography>
+                          <Typography variant="caption" color="text.secondary" display="block">
+                            {e.dates || "Dates not parsed"}
+                            {e.skills?.length ? ` · Skills: ${e.skills.slice(0, 6).join(", ")}` : ""}
+                          </Typography>
+                          {(e.highlights || []).slice(0, 2).map((h, hi) => (
+                            <Typography key={`hl-${idx}-${hi}`} variant="caption" display="block" sx={{ mt: 0.35 }}>
+                              • {h}
+                            </Typography>
+                          ))}
+                        </Paper>
+                      ))}
+                    </Stack>
+                  ) : (
+                    <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 2 }}>
+                      Re-upload your PDF résumé to populate structured work history.
+                    </Typography>
+                  )}
                   <Typography variant="subtitle2">Catalog skills detected</Typography>
                   <Typography variant="body2" color="text.secondary">
                     {(profile?.cv_preview?.skills || []).join(", ") || "No CV-derived skills detected yet."}

@@ -157,18 +157,25 @@ def _titles_for_story(user: User, ai: dict, cv: dict) -> tuple[str, str]:
     target = (ai.get("target_job_title") or user.job_title or "your assigned role").strip()
     headline = "Competency intelligence from your résumé and priorities"
     nlp = cv.get("nlp") or {}
-    pipe = str(nlp.get("pipeline") or "taxonomy_regex_v1")
+    pipe = str(nlp.get("pipeline") or "cv_deep_nlp_v4")
+    deep = cv.get("deep_intel") if isinstance(cv.get("deep_intel"), dict) else {}
     subtitle = (
         f"Signals are calibrated for '{target}'. Parsing engine: {pipe}. "
-        "Readiness merges CV taxonomy mentions, verified skill inventory, HR role templates, "
-        "and shortlisted project skill grids."
+        "Deep extraction reads work history, education, certifications, and skill evidence "
+        "before scoring readiness, gaps, and project fit."
     )
+    if deep.get("latest_role"):
+        subtitle += f" Latest role detected: {deep['latest_role']}"
+        if deep.get("latest_company"):
+            subtitle += f" at {deep['latest_company']}."
     return headline, subtitle
 
 
 def build_story_bullets(db: Session | None, user: User, profile: EmployeeProfile) -> tuple[str, str, list[str]]:
     ai = dict(profile.ai_profile or {})
-    cv = profile.cv_extract or {}
+    from app.services.cv import cv_extract_for_user
+
+    cv = cv_extract_for_user(db, user, profile) if db is not None else (profile.cv_extract or {})
     headline, subtitle = _titles_for_story(user, ai, cv)
 
     bullets: list[str] = []
@@ -183,17 +190,34 @@ def build_story_bullets(db: Session | None, user: User, profile: EmployeeProfile
         )
 
     n_skills = len(cv.get("skills") or [])
+    deep = cv.get("deep_intel") if isinstance(cv.get("deep_intel"), dict) else {}
     bullets.append(
-        f"Structured extraction mapped {n_skills} catalog skills from your résumé (controlled taxonomy avoids invented skills)."
+        f"Structured extraction mapped {n_skills} catalog skills from your résumé "
+        f"({deep.get('skills_in_work_history_count', 0)} substantiated in work history)."
     )
 
-    yrs = cv.get("experience_years")
-    if isinstance(yrs, int) and yrs > 0:
-        bullets.append(f"Résumé narrative suggests ~{yrs}+ years of professional experience.")
+    summary = str(cv.get("profile_summary") or "").strip()
+    if summary:
+        bullets.append(f"Professional summary captured ({min(len(summary), 1200)} chars) — used for semantic role alignment.")
 
-    edu = cv.get("education") or []
-    if edu:
-        bullets.append(f"Education cues captured ({len(edu)} excerpt(s)) — certificates and degrees strengthen skill credibility.")
+    yrs = cv.get("experience_years") or deep.get("experience_span_years")
+    if isinstance(yrs, int) and yrs > 0:
+        bullets.append(f"Career depth estimated at ~{yrs} years from work-history timelines and résumé narrative.")
+
+    exp_entries = cv.get("experience") or []
+    if exp_entries:
+        latest = exp_entries[0] if isinstance(exp_entries[0], dict) else {}
+        role = latest.get("title") or "Role"
+        org = latest.get("company") or "organization"
+        bullets.append(f"Most recent position parsed: {role} at {org}.")
+
+    edu_entries = cv.get("education_entries") or cv.get("education") or []
+    if edu_entries:
+        bullets.append(f"Education block parsed ({len(edu_entries)} entry/entries) — strengthens credential credibility.")
+
+    cert_entries = cv.get("certification_entries") or cv.get("certifications") or []
+    if cert_entries:
+        bullets.append(f"Certifications detected ({len(cert_entries)}) — compliance and training views use these signals.")
 
     conf = ai.get("confidence")
     if conf is not None:
@@ -276,7 +300,9 @@ def selected_projects_detail(db: Session, user: User, profile: EmployeeProfile) 
 def build_employee_dashboard_intel(db: Session, user: User, profile: EmployeeProfile) -> dict:
     """Read-only bundle for the employee home dashboard (no DB writes)."""
     ai = dict(profile.ai_profile or {})
-    cv = profile.cv_extract or {}
+    from app.services.cv import cv_extract_for_user
+
+    cv = cv_extract_for_user(db, user, profile)
     target_jt = (ai.get("target_job_title") or user.job_title or "").strip()
     hr_jt = (user.job_title or "").strip()
 
@@ -317,6 +343,7 @@ def build_employee_dashboard_intel(db: Session, user: User, profile: EmployeePro
 
     nlp_meta = cv.get("nlp") or {}
     pdf_meta = cv.get("pdf") or {}
+    deep = cv.get("deep_intel") if isinstance(cv.get("deep_intel"), dict) else {}
 
     return {
         "narrative": {"headline": headline, "subtitle": subtitle, "bullets": bullets_ext},
@@ -327,7 +354,10 @@ def build_employee_dashboard_intel(db: Session, user: User, profile: EmployeePro
             "inventory_overlap_at_working_level": inv_overlap,
             "certifications_preview": (cv.get("certifications") or [])[:5],
             "education_preview": (cv.get("education") or [])[:5],
-            "experience_years_hint": cv.get("experience_years"),
+            "experience_years_hint": cv.get("experience_years") or deep.get("experience_span_years"),
+            "experience_timeline": (cv.get("experience") or [])[:6],
+            "profile_summary_preview": (cv.get("profile_summary") or "")[:320],
+            "deep_intel": deep,
             "text_preview_tail": (cv.get("text_preview") or "")[:400],
             "quality_tier": cv_comp.get("quality_tier"),
             "quality_score": cv_comp.get("quality_score"),
@@ -363,5 +393,5 @@ def build_employee_dashboard_intel(db: Session, user: User, profile: EmployeePro
         "alignment_score_target_role_gap_math": alignment_gap_math,
         "selected_projects": selected_projects_detail(db, user, profile),
         "open_opportunities": openness[:24],
-        "engine": {"version": "employee_intel_3_cv_competency", "sklearn_signals": ml_cos_tgt is not None},
+        "engine": {"version": "employee_intel_4_cv_deep", "sklearn_signals": ml_cos_tgt is not None},
     }

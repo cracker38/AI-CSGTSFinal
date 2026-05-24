@@ -71,5 +71,17 @@ SKILL_KEYWORDS: frozenset[str] = frozenset(
         "scrum",
         "agile",
         "project management",
+        "spring boot",
+        "spring",
+        "html",
+        "css",
+        "next.js",
+        "express",
+        "laravel",
+        "selenium",
+        "figma",
+        "blockchain",
+        "cybersecurity",
+        "networking",
     }
 )
