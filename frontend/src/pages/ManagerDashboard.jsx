@@ -12,6 +12,7 @@ import {
   FormControlLabel,
   Grid,
   MenuItem,
+  Paper,
   Stack,
   Table,
   TableBody,
@@ -41,6 +42,118 @@ const SECTIONS = [
   { key: "performance", label: "Performance monitoring" },
   { key: "alerts", label: "Alerts & risks" }
 ];
+
+function fitClassChipColor(fitClass) {
+  if (fitClass === "Best Fit") return "success";
+  if (fitClass === "Good Fit") return "primary";
+  if (fitClass === "Risky") return "warning";
+  return "default";
+}
+
+function EmployeeMatchRationale({ match }) {
+  const highlights = match.highlights || [];
+
+  return (
+    <Box
+      sx={{
+        p: 1.5,
+        borderRadius: 2,
+        bgcolor: "action.hover",
+        borderLeft: "3px solid",
+        borderColor: match.eligible ? "success.main" : "warning.main"
+      }}
+    >
+      <Typography variant="overline" color="text.secondary" sx={{ lineHeight: 1.4 }}>
+        AI rationale
+      </Typography>
+      <Typography variant="body2" fontWeight={700} sx={{ mt: 0.35, lineHeight: 1.55 }}>
+        {match.recommendation || "No recommendation generated."}
+      </Typography>
+      {highlights.length > 0 ? (
+        <Stack component="ul" spacing={0.4} sx={{ m: 0, mt: 0.85, pl: 2.25 }}>
+          {highlights.map((item, idx) => (
+            <Typography component="li" variant="body2" key={`${item}-${idx}`} sx={{ lineHeight: 1.65, wordBreak: "break-word" }}>
+              {item}
+            </Typography>
+          ))}
+        </Stack>
+      ) : null}
+      {!match.eligible && match.eligibility_reason ? (
+        <Typography variant="caption" color="warning.main" display="block" sx={{ mt: 0.85 }}>
+          Blockers: {String(match.eligibility_reason).replace(/_/g, " ")}
+        </Typography>
+      ) : null}
+    </Box>
+  );
+}
+
+function EmployeeMatchCard({ match }) {
+  const metrics = [
+    { label: "Overall", value: `${match.match_pct}%` },
+    { label: "Skill fit", value: `${match.skill_match_pct}%` },
+    { label: "CV evidence", value: `${match.cv_score}%` },
+    { label: "CV semantic", value: match.cv_semantic_pct != null ? `${match.cv_semantic_pct}%` : "—" },
+    { label: "Title fit", value: `${match.title_match_pct}%` },
+    { label: "Experience", value: `${match.experience_score}%` },
+    { label: "Gap", value: match.gap ?? "—" },
+    { label: "Workload", value: `${match.workload_pct ?? (match.availability ? "<100" : "100")}%` }
+  ];
+
+  return (
+    <Paper variant="outlined" sx={{ p: { xs: 1.75, sm: 2 }, borderRadius: 2.5, borderColor: "divider" }}>
+      <Stack spacing={1.5}>
+        <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} justifyContent="space-between" alignItems={{ xs: "stretch", sm: "flex-start" }}>
+          <Box sx={{ minWidth: 0 }}>
+            <Typography variant="subtitle1" fontWeight={800}>
+              {match.employee}
+            </Typography>
+            <Typography variant="body2" color="text.secondary">
+              {match.job_title || "—"}
+            </Typography>
+          </Box>
+          <Chip
+            size="small"
+            label={match.fit_class || "Unknown"}
+            color={fitClassChipColor(match.fit_class)}
+            sx={{ alignSelf: { xs: "flex-start", sm: "center" }, flexShrink: 0 }}
+          />
+        </Stack>
+
+        <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+          <Chip
+            size="small"
+            color={match.eligible ? "success" : "warning"}
+            label={match.eligible ? "Eligible" : match.eligibility_reason?.replace(/_/g, " ") || "Not eligible"}
+          />
+          <Chip size="small" variant="outlined" label={match.availability ? "Available" : "Busy"} />
+          {match.cv_quality_pct != null ? (
+            <Chip
+              size="small"
+              variant="outlined"
+              color={match.cv_quality_tier === "strong" ? "success" : match.cv_quality_tier === "weak" || match.cv_quality_tier === "minimal" ? "warning" : "default"}
+              label={`CV ${match.cv_quality_pct}% · ${match.cv_quality_tier || "n/a"}`}
+            />
+          ) : null}
+        </Stack>
+
+        <Grid container spacing={1}>
+          {metrics.map((m) => (
+            <Grid item xs={6} sm={3} key={m.label}>
+              <Typography variant="caption" color="text.secondary" display="block">
+                {m.label}
+              </Typography>
+              <Typography variant="body2" fontWeight={700}>
+                {m.value}
+              </Typography>
+            </Grid>
+          ))}
+        </Grid>
+
+        <EmployeeMatchRationale match={match} />
+      </Stack>
+    </Paper>
+  );
+}
 
 function normalizeTitle(value) {
   return String(value || "")
@@ -779,64 +892,86 @@ export default function ManagerDashboard() {
                     Candidates were found, but none are currently eligible for assignment. Review job titles or workload.
                   </Alert>
                 ) : null}
-                <TableContainer><Table size="small"><TableHead><TableRow>
-                  <TableCell>Employee</TableCell>
-                  <TableCell>Job Title</TableCell>
-                  <TableCell>Fit Class</TableCell>
-                  <TableCell>Overall Match</TableCell>
-                  <TableCell>Skill Fit</TableCell>
-                  <TableCell>CV Evidence</TableCell>
-                  <TableCell>CV Semantic</TableCell>
-                  <TableCell>CV Quality</TableCell>
-                  <TableCell>Title Fit</TableCell>
-                  <TableCell>Experience</TableCell>
-                  <TableCell>Gap</TableCell>
-                  <TableCell>Availability</TableCell>
-                  <TableCell>Eligibility</TableCell>
-                  <TableCell>AI rationale</TableCell>
-                </TableRow></TableHead><TableBody>
-                  {matches.map((m) => (
-                    <TableRow key={m.employee_id}>
-                      <TableCell>{m.employee}</TableCell>
-                      <TableCell>{m.job_title}</TableCell>
-                      <TableCell>
-                        <Chip size="small" label={m.fit_class || "Unknown"} color={m.fit_class === "Best Fit" ? "success" : m.fit_class === "Good Fit" ? "primary" : m.fit_class === "Risky" ? "warning" : "default"} />
-                      </TableCell>
-                      <TableCell>{m.match_pct}%</TableCell>
-                      <TableCell>{m.skill_match_pct}%</TableCell>
-                      <TableCell>{m.cv_score}%</TableCell>
-                      <TableCell>{m.cv_semantic_pct != null ? `${m.cv_semantic_pct}%` : "—"}</TableCell>
-                      <TableCell>
-                        {m.cv_quality_pct != null ? (
-                          <Chip
-                            size="small"
-                            variant="outlined"
-                            label={`${m.cv_quality_pct}% · ${m.cv_quality_tier || "n/a"}`}
-                            color={m.cv_quality_tier === "strong" ? "success" : m.cv_quality_tier === "weak" || m.cv_quality_tier === "minimal" ? "warning" : "default"}
-                          />
-                        ) : (
-                          "—"
-                        )}
-                      </TableCell>
-                      <TableCell>{m.title_match_pct}%</TableCell>
-                      <TableCell>{m.experience_score}%</TableCell>
-                      <TableCell>{m.gap}</TableCell>
-                      <TableCell>{m.availability ? "Available" : "Busy"}</TableCell>
-                      <TableCell>
-                        <Chip
-                          size="small"
-                          color={m.eligible ? "success" : "warning"}
-                          label={m.eligible ? "Eligible" : (m.eligibility_reason || "Not eligible")}
-                        />
-                      </TableCell>
-                      <TableCell sx={{ maxWidth: 280 }}>
-                        <Typography variant="caption" display="block">
-                          {(m.highlights || []).slice(0, 2).join(" · ") || m.recommendation || "—"}
-                        </Typography>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody></Table></TableContainer>
+                {hasRunMatching && matches.length > 0 ? (
+                  <>
+                    <Box sx={{ display: { xs: "block", lg: "none" } }}>
+                      <Stack spacing={2}>
+                        {matches.map((m) => (
+                          <EmployeeMatchCard key={m.employee_id} match={m} />
+                        ))}
+                      </Stack>
+                    </Box>
+
+                    <TableContainer sx={{ display: { xs: "none", lg: "block" } }}>
+                      <Table size="small">
+                        <TableHead>
+                          <TableRow>
+                            <TableCell>Employee</TableCell>
+                            <TableCell>Job Title</TableCell>
+                            <TableCell>Fit Class</TableCell>
+                            <TableCell align="right">Overall</TableCell>
+                            <TableCell align="right">Skill</TableCell>
+                            <TableCell align="right">CV Evidence</TableCell>
+                            <TableCell align="right">Semantic</TableCell>
+                            <TableCell>CV Quality</TableCell>
+                            <TableCell align="right">Title</TableCell>
+                            <TableCell align="right">Experience</TableCell>
+                            <TableCell align="right">Gap</TableCell>
+                            <TableCell>Availability</TableCell>
+                            <TableCell>Eligibility</TableCell>
+                          </TableRow>
+                        </TableHead>
+                        <TableBody>
+                          {matches.map((m) => (
+                            <React.Fragment key={m.employee_id}>
+                              <TableRow hover>
+                                <TableCell sx={{ fontWeight: 700 }}>{m.employee}</TableCell>
+                                <TableCell>{m.job_title}</TableCell>
+                                <TableCell>
+                                  <Chip size="small" label={m.fit_class || "Unknown"} color={fitClassChipColor(m.fit_class)} />
+                                </TableCell>
+                                <TableCell align="right">{m.match_pct}%</TableCell>
+                                <TableCell align="right">{m.skill_match_pct}%</TableCell>
+                                <TableCell align="right">{m.cv_score}%</TableCell>
+                                <TableCell align="right">{m.cv_semantic_pct != null ? `${m.cv_semantic_pct}%` : "—"}</TableCell>
+                                <TableCell>
+                                  {m.cv_quality_pct != null ? (
+                                    <Chip
+                                      size="small"
+                                      variant="outlined"
+                                      label={`${m.cv_quality_pct}% · ${m.cv_quality_tier || "n/a"}`}
+                                      color={m.cv_quality_tier === "strong" ? "success" : m.cv_quality_tier === "weak" || m.cv_quality_tier === "minimal" ? "warning" : "default"}
+                                    />
+                                  ) : (
+                                    "—"
+                                  )}
+                                </TableCell>
+                                <TableCell align="right">{m.title_match_pct}%</TableCell>
+                                <TableCell align="right">{m.experience_score}%</TableCell>
+                                <TableCell align="right">{m.gap}</TableCell>
+                                <TableCell>{m.availability ? "Available" : "Busy"}</TableCell>
+                                <TableCell>
+                                  <Chip
+                                    size="small"
+                                    color={m.eligible ? "success" : "warning"}
+                                    label={m.eligible ? "Eligible" : m.eligibility_reason?.replace(/_/g, " ") || "Not eligible"}
+                                  />
+                                </TableCell>
+                              </TableRow>
+                              <TableRow>
+                                <TableCell colSpan={13} sx={{ py: 0, borderBottom: "1px solid", borderColor: "divider" }}>
+                                  <Box sx={{ py: 1.5, mb: 1 }}>
+                                    <EmployeeMatchRationale match={m} />
+                                  </Box>
+                                </TableCell>
+                              </TableRow>
+                            </React.Fragment>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </TableContainer>
+                  </>
+                ) : null}
               </CardContent></Card>
             ) : null}
 
