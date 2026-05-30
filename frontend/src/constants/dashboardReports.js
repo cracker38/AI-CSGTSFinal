@@ -1,70 +1,60 @@
 export const HR_REPORTS = [
   {
-    id: "main",
-    title: "Main workforce report",
-    description: "Executive brief — org KPIs, gap severity, top priorities, and operational highlights in a concise leadership PDF.",
-    highlights: ["Org KPIs & gap severity", "Top skill gaps", "Training & compliance snapshot", "Recent HR actions"],
+    id: "employee_directory",
+    title: "Employee directory",
+    description: "Complete workforce register — every employee with contact details, department, job profile, manager assignment, and account status.",
+    highlights: ["Full employee list", "Department headcount", "Manager assignments", "Pending registrations"],
     accent: "primary",
-    filename: "hr-main-workforce-report.pdf"
+    icon: "directory",
+    filename: "hr-employee-directory-report.pdf"
   },
   {
-    id: "executive",
-    title: "Executive summary",
-    description: "Leadership view of headcount, departments, open gaps, and severity distribution across the organization.",
-    highlights: ["Employee & department counts", "Organization skill gaps", "Gap severity breakdown", "Department gap ranking"],
+    id: "employee_performance",
+    title: "Employee performance",
+    description: "Organization-wide performance analytics — project success, skill improvement, training completion, and composite performance scores.",
+    highlights: ["Performance scores", "Skill target progress", "Training completion", "Top performers"],
     accent: "secondary",
-    filename: "hr-executive-summary.pdf"
+    icon: "performance",
+    filename: "hr-employee-performance-report.pdf"
   },
   {
-    id: "training_compliance",
-    title: "Training & compliance",
-    description: "Training budget, recommended programs, live assignments, enrollments, and certification compliance status.",
-    highlights: ["Budget & completion rate", "Recommended programs", "Active assignments", "Certification alerts"],
+    id: "training_active",
+    title: "Employees in training",
+    description: "Live training roster — who is enrolled, course progress, learning sessions, verified study time, and pending enrollment requests.",
+    highlights: ["Active assignments", "In-session learners", "Course progress", "Enrollment queue"],
     accent: "info",
-    filename: "hr-training-compliance-report.pdf"
-  },
-  {
-    id: "talent",
-    title: "Talent & workforce records",
-    description: "Employee directory, pending registrations, recruitment insights, talent pipeline, and performance support data.",
-    highlights: ["Employee records", "Pending approvals", "Recruitment priorities", "Recent HR actions"],
-    accent: "success",
-    filename: "hr-talent-workforce-report.pdf"
+    icon: "training",
+    filename: "hr-employees-in-training-report.pdf"
   }
 ];
 
 export const MANAGER_REPORTS = [
   {
-    id: "main",
-    title: "Main team report",
-    description: "Executive brief — team KPIs, roster snapshot, top gaps, active projects, and alerts in a concise leadership PDF.",
-    highlights: ["Team KPIs", "Team at a glance", "Top skill gaps", "Projects & alerts"],
+    id: "team_directory",
+    title: "Team directory",
+    description: "Complete roster of your direct reports — contact profile, skills, workload, availability, and current performance snapshot.",
+    highlights: ["Full team list", "Skills & workload", "Availability status", "Department breakdown"],
     accent: "primary",
-    filename: "manager-main-team-report.pdf"
+    icon: "directory",
+    filename: "manager-team-directory-report.pdf"
   },
   {
-    id: "team_ops",
-    title: "Team operations",
-    description: "Team members, workload distribution, performance monitoring, daily project reports, and operational alerts.",
-    highlights: ["Team roster & skills", "Workload & availability", "Performance metrics", "Risk alerts"],
+    id: "team_performance",
+    title: "Team performance",
+    description: "Performance analytics for your team — project delivery, skill improvement, training completion, and composite scores.",
+    highlights: ["Performance scores", "Task completion", "Skill improvement", "Top performers"],
     accent: "secondary",
-    filename: "manager-team-operations-report.pdf"
+    icon: "performance",
+    filename: "manager-team-performance-report.pdf"
   },
   {
-    id: "skills_gaps",
-    title: "Skills & gap analysis",
-    description: "Team skill overview, heatmap coverage, and prioritized skill gap analysis for staffing decisions.",
-    highlights: ["Skill distribution", "Gap scores by skill", "Affected employees", "Severity indicators"],
-    accent: "warning",
-    filename: "manager-skills-gaps-report.pdf"
-  },
-  {
-    id: "projects_matching",
-    title: "Projects & AI matching",
-    description: "Active projects, assignment context, AI employee matching scores, eligibility, and match rationale.",
-    highlights: ["Project requirements", "Match percentages", "CV quality signals", "Skill breakdown"],
+    id: "team_training",
+    title: "Team in training",
+    description: "Team members enrolled in learning programs — course progress, live sessions, verified study time, and pending HR enrollments.",
+    highlights: ["Active assignments", "In-session learners", "Course progress", "Pending enrollments"],
     accent: "info",
-    filename: "manager-projects-matching-report.pdf"
+    icon: "training",
+    filename: "manager-team-in-training-report.pdf"
   }
 ];
 

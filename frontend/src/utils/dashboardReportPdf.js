@@ -84,171 +84,421 @@ function buildEmployeeMainBrief(r, data) {
   }
 }
 
-function buildManagerMainBrief(r, data) {
-  const { kpis = [], team = [], gaps = [], projects = [], alerts = [], matches, matchReport } = data;
-  r.section("Executive brief", "Team leadership snapshot — essentials for decision-making");
-  r.kpis(kpis.slice(0, 4), 4);
-  r.keyValueRows([
-    ["Team size", team.length],
-    ["Active projects", projects.filter((p) => p.status === "active").length || projects.length],
-    ["Open alerts", alerts.length],
-    ["Skill gaps tracked", gaps.length]
-  ]);
-  if (team.length) {
-    r.section("Team at a glance");
+function buildManagerTeamDirectoryReport(r, data) {
+  const { team = [], overview, kpis = [] } = data;
+  const deptRows = Object.entries(
+    team.reduce((acc, m) => {
+      const d = (m.department || "Unassigned").trim() || "Unassigned";
+      acc[d] = (acc[d] || 0) + 1;
+      return acc;
+    }, {})
+  )
+    .map(([department, count]) => ({ department, count }))
+    .sort((a, b) => b.count - a.count);
+  const available = team.filter((m) => m.availability === "available").length;
+  const overloaded = team.filter((m) => m.availability === "overloaded").length;
+
+  r.section("Team overview", "Official register of employees assigned to your management unit");
+  r.kpis(
+    [
+      { label: "Team members", value: team.length },
+      { label: "Available", value: available },
+      { label: "Overloaded", value: overloaded },
+      { label: "Active projects", value: overview?.kpis?.active_projects ?? kpis.find((k) => k.label?.includes("project"))?.value ?? "—" }
+    ],
+    4
+  );
+
+  r.section("Headcount by department");
+  r.table(
+    [
+      { header: "Department", value: (row) => row.department },
+      { header: "Members", value: (row) => row.count },
+      { header: "Share", value: (row) => (team.length ? fmtPct(Math.round((100 * row.count) / team.length)) : "—") }
+    ],
+    deptRows,
+    { maxRows: 30, emptyText: "No team members assigned." }
+  );
+
+  r.section("Complete team roster", `${team.length} member(s) — sorted alphabetically`);
+  r.table(
+    [
+      { header: "Name", value: (row) => row.name },
+      { header: "Job title", value: (row) => row.role },
+      { header: "Department", value: (row) => row.department },
+      { header: "Skills", value: (row) => (row.skills || []).slice(0, 5).map((s) => `${s.name} (${s.level})`).join(", ") },
+      { header: "Workload", value: (row) => fmtPct(row.workload_pct) },
+      { header: "Availability", value: (row) => row.availability },
+      { header: "Performance", value: (row) => (row.performance != null ? `${row.performance}%` : "—") },
+      { header: "Training", value: (row) => (row.training_completion_pct != null ? `${row.training_completion_pct}%` : "—") }
+    ],
+    [...team].sort((a, b) => String(a.name || "").localeCompare(String(b.name || ""))),
+    { maxRows: 200, emptyText: "No team members on record." }
+  );
+}
+
+function buildManagerTeamPerformanceReport(r, data) {
+  const rows = [...(data.performance || [])].sort(
+    (a, b) => Number(b.performance_score || 0) - Number(a.performance_score || 0)
+  );
+  const avg = (key) =>
+    rows.length ? round(rows.reduce((s, row) => s + Number(row[key] || 0), 0) / rows.length, 1) : 0;
+  const high = rows.filter((row) => Number(row.performance_score || 0) >= 70).length;
+  const developing = rows.filter((row) => {
+    const s = Number(row.performance_score || 0);
+    return s >= 45 && s < 70;
+  }).length;
+  const focus = rows.filter((row) => Number(row.performance_score || 0) < 45).length;
+
+  r.section("Team performance summary", "Composite scores from project delivery, skill targets, and training progress");
+  r.kpis(
+    [
+      { label: "Team members scored", value: rows.length },
+      { label: "Avg performance", value: avg("performance_score") },
+      { label: "Avg task completion", value: `${avg("task_completion_rate")}%` },
+      { label: "Avg skill improvement", value: `${avg("skill_improvement")}%` }
+    ],
+    4
+  );
+  r.kpis(
+    [
+      { label: "Strong (≥70)", value: high },
+      { label: "Developing (45–69)", value: developing },
+      { label: "Focus required (<45)", value: focus },
+      { label: "Avg training completion", value: `${avg("training_completion_pct")}%` }
+    ],
+    4
+  );
+
+  r.section("Team performance register", "Sorted by composite performance score (highest first)");
+  r.table(
+    [
+      { header: "Employee", value: (row) => row.employee },
+      { header: "Performance", value: (row) => row.performance_score },
+      { header: "Task completion", value: (row) => `${row.task_completion_rate}%` },
+      { header: "Skill improvement", value: (row) => `${row.skill_improvement}%` },
+      { header: "Training", value: (row) => `${row.training_completion_pct}%` },
+      { header: "Projects tracked", value: (row) => row.projects_tracked ?? "—" }
+    ],
+    rows,
+    { maxRows: 200, emptyText: "No performance data for your team." }
+  );
+
+  const top = rows.slice(0, 10);
+  if (top.length) {
+    r.section("Top performers on your team");
     r.table(
       [
-        { header: "Name", value: (row) => row.name },
-        { header: "Role", value: (row) => row.role },
-        { header: "Workload", value: (row) => fmtPct(row.workload_pct) },
-        { header: "Availability", value: (row) => row.availability }
+        { header: "Rank", value: (row) => row.rank },
+        { header: "Employee", value: (row) => row.employee },
+        { header: "Score", value: (row) => row.performance_score },
+        { header: "Training", value: (row) => `${row.training_completion_pct}%` }
       ],
-      team.slice(0, 8),
-      { maxRows: 8 }
+      top.map((row, i) => ({ ...row, rank: i + 1 })),
+      { maxRows: 10 }
     );
-  }
-  if (gaps.length) {
-    r.section("Top skill gaps");
-    r.table(
-      [
-        { header: "Skill", value: (row) => row.skill },
-        { header: "Gap score", value: (row) => row.gap_score ?? row.total_gap },
-        { header: "Severity", value: (row) => row.severity }
-      ],
-      gaps.slice(0, 6),
-      { maxRows: 6 }
-    );
-  }
-  if (projects.length) {
-    r.section("Active projects");
-    r.table(
-      [
-        { header: "Project", value: (row) => row.name },
-        { header: "Department", value: (row) => row.department },
-        { header: "Status", value: (row) => row.status }
-      ],
-      projects.slice(0, 5),
-      { maxRows: 5 }
-    );
-  }
-  const matchRows = matches?.length ? matches : matchReport?.candidates || [];
-  if (matchReport?.summary || matchRows.length) {
-    r.section("AI matching highlight");
-    if (matchReport?.summary) {
-      r.kpis(
-        [
-          { label: "Project", value: matchReport.project?.name || "—" },
-          { label: "Eligible", value: matchReport.summary.eligible_count },
-          { label: "Best match", value: fmtPct(matchReport.summary.best_match_pct) }
-        ],
-        3
-      );
-    }
-    r.table(
-      [
-        { header: "Employee", value: (row) => row.employee || row.employee_name },
-        { header: "Match", value: (row) => fmtPct(row.match_pct) },
-        { header: "Fit", value: (row) => row.fit_class }
-      ],
-      matchRows.slice(0, 5),
-      { maxRows: 5 }
-    );
-  }
-  if (alerts.length) {
-    r.section("Alerts requiring attention");
-    r.bullets(alerts.slice(0, 5).map((a) => safeLines(a.message, 120)));
   }
 }
 
-function buildHrMainBrief(r, data) {
-  const {
-    headerKpis = [],
-    overviewMetrics = {},
-    kpis,
-    gapTable = [],
-    topGaps = [],
-    deptGaps = [],
-    gapSeverity = {},
-    pending = [],
-    complianceData = {},
-    trainingPlan = {},
-    recentHrActions = [],
-    cvPendingCount = 0
-  } = data;
-  r.section("Executive brief", "Organization-wide workforce intelligence — leadership summary");
-  r.kpis(headerKpis.slice(0, 4), 4);
+function buildManagerTeamTrainingReport(r, data) {
+  const teamTraining = data.teamTraining || [];
+  const inSession = teamTraining.filter((t) => t.session_active || t.learning_state === "in_session").length;
+  const pending = teamTraining.filter((t) => t.status === "pending").length;
+  const employeeIds = new Set(teamTraining.map((t) => t.employee_id || t.employee_name));
+
+  const byEmployee = Object.values(
+    teamTraining.reduce((acc, row) => {
+      const key = row.employee_id || row.employee_name || "unknown";
+      if (!acc[key]) {
+        acc[key] = {
+          employee_name: row.employee_name,
+          employee_email: row.employee_email,
+          department: row.department,
+          courses: 0,
+          max_progress: 0,
+          in_session: false,
+          has_pending: false
+        };
+      }
+      acc[key].courses += 1;
+      acc[key].max_progress = Math.max(acc[key].max_progress, Number(row.progress_pct) || 0);
+      if (row.session_active || row.learning_state === "in_session") acc[key].in_session = true;
+      if (row.status === "pending") acc[key].has_pending = true;
+      return acc;
+    }, {})
+  ).sort((a, b) => String(a.employee_name || "").localeCompare(String(b.employee_name || "")));
+
+  r.section("Team training operations", "Direct reports currently enrolled in HR learning programs");
   r.kpis(
     [
-      { label: "Departments", value: overviewMetrics.departments },
-      { label: "Training active", value: overviewMetrics.trainingInProgress },
-      { label: "Certs expiring", value: overviewMetrics.certificationsExpiringSoon },
-      { label: "CV pending", value: cvPendingCount }
+      { label: "Active assignments", value: teamTraining.length },
+      { label: "Team members in training", value: employeeIds.size },
+      { label: "Learning now (in session)", value: inSession },
+      { label: "Pending HR approval", value: pending }
     ],
     4
   );
-  if (kpis) {
-    r.keyValueRows([
-      ["Total employees", kpis.users_by_role?.employee ?? overviewMetrics.totalEmployees],
-      ["Managers", kpis.users_by_role?.manager],
-      ["Pending approvals", pending.length],
-      ["Open org gaps", overviewMetrics.gapsCount ?? gapTable.length]
-    ]);
-  }
-  r.section("Gap severity overview");
+
+  r.section("Team members in training", `${employeeIds.size} employee(s) with open programs`);
+  r.table(
+    [
+      { header: "Employee", value: (row) => row.employee_name },
+      { header: "Email", value: (row) => row.employee_email },
+      { header: "Department", value: (row) => row.department },
+      { header: "Open courses", value: (row) => row.courses },
+      { header: "Best progress", value: (row) => fmtPct(row.max_progress) },
+      { header: "In session", value: (row) => (row.in_session ? "Yes" : "No") },
+      { header: "Pending HR", value: (row) => (row.has_pending ? "Yes" : "No") }
+    ],
+    byEmployee,
+    { maxRows: 200, emptyText: "No team members currently in training." }
+  );
+
+  r.section("Active course assignments", "Full detail — program, skill target, progress, and attendance");
+  r.table(
+    [
+      { header: "Employee", value: (row) => row.employee_name },
+      { header: "Program", value: (row) => safeLines(row.program_name, 36) },
+      { header: "Target skill", value: (row) => row.target_skill },
+      { header: "Progress", value: (row) => fmtPct(row.progress_pct) },
+      { header: "Status", value: (row) => row.status },
+      { header: "Learning state", value: (row) => String(row.learning_state || "—").replace(/_/g, " ") },
+      { header: "Verified time", value: (row) => row.total_learning_display || row.total_learning_seconds || "—" },
+      { header: "Sessions", value: (row) => row.sessions_completed ?? "—" }
+    ],
+    teamTraining,
+    { maxRows: 200, emptyText: "No active training on your team." }
+  );
+}
+
+function buildHrEmployeeDirectoryReport(r, data) {
+  const { records = [], pending = [], managers = [] } = data;
+  const employees = records.filter((x) => x.role === "employee");
+  const managerMap = Object.fromEntries(
+    (managers || []).map((m) => [String(m.id), m.name || m.full_name || "—"])
+  );
+  const deptRows = Object.entries(
+    employees.reduce((acc, e) => {
+      const d = (e.department || "Unassigned").trim() || "Unassigned";
+      acc[d] = (acc[d] || 0) + 1;
+      return acc;
+    }, {})
+  )
+    .map(([department, count]) => ({ department, count }))
+    .sort((a, b) => b.count - a.count);
+
+  r.section("Workforce overview", "Official register of all employee accounts in the organization");
   r.kpis(
     [
-      { label: "High", value: gapSeverity.HIGH || 0 },
-      { label: "Medium", value: gapSeverity.MEDIUM || 0 },
-      { label: "Low", value: gapSeverity.LOW || 0 }
+      { label: "Total employees", value: employees.length },
+      { label: "Active accounts", value: employees.filter((e) => e.status === "active").length },
+      { label: "Pending approval", value: pending.length },
+      { label: "Departments", value: deptRows.length }
     ],
-    3
+    4
   );
-  const gaps = gapTable.length ? gapTable : topGaps;
-  if (gaps.length) {
+
+  r.section("Headcount by department");
+  r.table(
+    [
+      { header: "Department", value: (row) => row.department },
+      { header: "Employees", value: (row) => row.count },
+      { header: "Share", value: (row) => (employees.length ? fmtPct(Math.round((100 * row.count) / employees.length)) : "—") }
+    ],
+    deptRows,
+    { maxRows: 40, emptyText: "No employees on record." }
+  );
+
+  r.section("Complete employee list", `${employees.length} record(s) — sorted alphabetically`);
+  r.table(
+    [
+      { header: "Name", value: (row) => row.full_name },
+      { header: "Email", value: (row) => row.email },
+      { header: "Department", value: (row) => row.department },
+      { header: "Job title", value: (row) => row.job_title },
+      { header: "Primary skill", value: (row) => row.primary_skill },
+      { header: "Experience", value: (row) => row.experience_level },
+      { header: "Manager", value: (row) => (row.manager_id ? managerMap[String(row.manager_id)] || "Assigned" : "—") },
+      { header: "Status", value: (row) => row.status }
+    ],
+    [...employees].sort((a, b) => String(a.full_name || "").localeCompare(String(b.full_name || ""))),
+    { maxRows: 500, emptyText: "No employee records." }
+  );
+
+  if (pending.length) {
+    r.section("Pending registrations", "New accounts awaiting HR approval");
     r.table(
       [
-        { header: "Skill", value: (row) => row.skill },
-        { header: "Org gap", value: (row) => row.gap ?? row.total_gap },
-        { header: "Severity", value: (row) => row.severity }
-      ],
-      gaps.slice(0, 8),
-      { maxRows: 8 }
-    );
-  }
-  if (deptGaps.length) {
-    r.section("Departments most affected");
-    r.table(
-      [
+        { header: "Name", value: (row) => row.full_name },
+        { header: "Email", value: (row) => row.email },
         { header: "Department", value: (row) => row.department },
-        { header: "Gap score", value: (row) => row.gap_score ?? row.total_gap }
+        { header: "Job title", value: (row) => row.job_title },
+        { header: "Role", value: (row) => row.role }
       ],
-      deptGaps.slice(0, 5),
-      { maxRows: 5 }
+      pending,
+      { maxRows: 40 }
     );
   }
-  const budget = trainingPlan.budget || {};
-  r.section("Operational priorities");
+}
+
+function buildHrEmployeePerformanceReport(r, data) {
+  const rows = [...(data.performanceData?.rows || [])].sort(
+    (a, b) => Number(b.performance_score || 0) - Number(a.performance_score || 0)
+  );
+  const avg = (key) =>
+    rows.length ? round(rows.reduce((s, row) => s + Number(row[key] || 0), 0) / rows.length, 1) : 0;
+  const high = rows.filter((row) => Number(row.performance_score || 0) >= 70).length;
+  const developing = rows.filter((row) => {
+    const s = Number(row.performance_score || 0);
+    return s >= 45 && s < 70;
+  }).length;
+  const focus = rows.filter((row) => Number(row.performance_score || 0) < 45).length;
+
+  r.section("Performance summary", "Composite scores from project delivery, skill targets, and training progress");
   r.kpis(
     [
-      { label: "Training completion", value: fmtPct(trainingPlan.training_completion_rate_pct) },
-      { label: "Budget committed", value: budget.committed_spend != null ? `$${budget.committed_spend}` : "—" },
-      { label: "Compliance gaps", value: complianceData?.alerts?.missing ?? 0 },
-      { label: "Expiring certs", value: complianceData?.alerts?.expiring_soon ?? 0 }
+      { label: "Employees scored", value: rows.length },
+      { label: "Avg performance", value: avg("performance_score") },
+      { label: "Avg skill improvement", value: `${avg("skill_improvement")}%` },
+      { label: "Avg training completion", value: `${avg("training_completion")}%` }
     ],
     4
   );
-  if (recentHrActions.length) {
-    r.section("Recent HR actions");
+  r.kpis(
+    [
+      { label: "Strong (≥70)", value: high },
+      { label: "Developing (45–69)", value: developing },
+      { label: "Focus required (<45)", value: focus },
+      { label: "Avg project success", value: `${avg("project_success")}%` }
+    ],
+    4
+  );
+
+  r.section("Employee performance register", "Sorted by composite performance score (highest first)");
+  r.table(
+    [
+      { header: "Employee", value: (row) => row.employee },
+      { header: "Department", value: (row) => row.department },
+      { header: "Performance", value: (row) => row.performance_score },
+      { header: "Project success", value: (row) => `${row.project_success}%` },
+      { header: "Skill improvement", value: (row) => `${row.skill_improvement}%` },
+      { header: "Training", value: (row) => `${row.training_completion}%` },
+      { header: "Skills on target", value: (row) => row.skills_meeting_target },
+      { header: "Trainings done", value: (row) => row.trainings_completed }
+    ],
+    rows,
+    { maxRows: 300, emptyText: "No performance data available." }
+  );
+
+  const top = rows.slice(0, 10);
+  if (top.length) {
+    r.section("Top performers", "Highest composite scores — recognition and succession planning");
     r.table(
       [
-        { header: "Action", value: (row) => safeLines(row.action || row.action_type, 40) },
-        { header: "Target", value: (row) => row.target_name || row.employee_name },
-        { header: "Status", value: (row) => row.status }
+        { header: "Rank", value: (row) => row.rank },
+        { header: "Employee", value: (row) => row.employee },
+        { header: "Department", value: (row) => row.department },
+        { header: "Score", value: (row) => row.performance_score }
       ],
-      recentHrActions.slice(0, 5),
-      { maxRows: 5 }
+      top.map((row, i) => ({ ...row, rank: i + 1 })),
+      { maxRows: 10 }
     );
   }
+}
+
+function buildHrTrainingActiveReport(r, data) {
+  const { hrOpenTrainings = [], hrPendingEnrollments = [], trainingPlan = {} } = data;
+  const inSession = hrOpenTrainings.filter((t) => t.session_active || t.learning_state === "in_session").length;
+  const employeeIds = new Set(hrOpenTrainings.map((t) => t.employee_id || t.employee_name));
+
+  const byEmployee = Object.values(
+    hrOpenTrainings.reduce((acc, row) => {
+      const key = row.employee_id || row.employee_name || "unknown";
+      if (!acc[key]) {
+        acc[key] = {
+          employee_name: row.employee_name,
+          employee_email: row.employee_email,
+          courses: 0,
+          max_progress: 0,
+          in_session: false,
+          total_verified: row.total_learning_display || "—"
+        };
+      }
+      acc[key].courses += 1;
+      acc[key].max_progress = Math.max(acc[key].max_progress, Number(row.progress_pct) || 0);
+      if (row.session_active || row.learning_state === "in_session") acc[key].in_session = true;
+      return acc;
+    }, {})
+  ).sort((a, b) => String(a.employee_name || "").localeCompare(String(b.employee_name || "")));
+
+  r.section("Training operations", "Employees currently enrolled in HR-assigned learning programs");
+  r.kpis(
+    [
+      { label: "Active assignments", value: hrOpenTrainings.length },
+      { label: "Employees in training", value: employeeIds.size },
+      { label: "Learning now (in session)", value: inSession },
+      { label: "Pending enrollments", value: hrPendingEnrollments.length }
+    ],
+    4
+  );
+  r.kpis(
+    [
+      { label: "Org completion rate", value: fmtPct(trainingPlan.training_completion_rate_pct) },
+      { label: "Completed (org)", value: trainingPlan.assignment_stats?.completed ?? "—" },
+      { label: "Active (org)", value: trainingPlan.assignment_stats?.active ?? hrOpenTrainings.length },
+      { label: "Budget committed", value: trainingPlan.budget?.committed_spend != null ? `$${trainingPlan.budget.committed_spend}` : "—" }
+    ],
+    4
+  );
+
+  r.section("Employees in training", `${employeeIds.size} employee(s) with open assignments`);
+  r.table(
+    [
+      { header: "Employee", value: (row) => row.employee_name },
+      { header: "Email", value: (row) => row.employee_email },
+      { header: "Open courses", value: (row) => row.courses },
+      { header: "Best progress", value: (row) => fmtPct(row.max_progress) },
+      { header: "In session", value: (row) => (row.in_session ? "Yes" : "No") },
+      { header: "Verified time", value: (row) => row.total_verified }
+    ],
+    byEmployee,
+    { maxRows: 200, emptyText: "No employees currently in training." }
+  );
+
+  r.section("Active course assignments", "Full detail — program, skill target, progress, and attendance");
+  r.table(
+    [
+      { header: "Employee", value: (row) => row.employee_name },
+      { header: "Program", value: (row) => safeLines(row.program_name, 36) },
+      { header: "Target skill", value: (row) => row.target_skill },
+      { header: "Progress", value: (row) => fmtPct(row.progress_pct) },
+      { header: "Status", value: (row) => row.status },
+      { header: "Learning state", value: (row) => String(row.learning_state || "—").replace(/_/g, " ") },
+      { header: "Verified time", value: (row) => row.total_learning_display || row.total_learning_seconds || "—" },
+      { header: "Sessions", value: (row) => row.sessions_completed ?? "—" }
+    ],
+    hrOpenTrainings,
+    { maxRows: 200, emptyText: "No active training assignments." }
+  );
+
+  if (hrPendingEnrollments.length) {
+    r.section("Enrollment requests pending HR approval");
+    r.table(
+      [
+        { header: "Employee", value: (row) => row.employee_name },
+        { header: "Course", value: (row) => safeLines(row.course || row.program_name, 40) },
+        { header: "Skill", value: (row) => row.skill || row.target_skill },
+        { header: "Requested", value: (row) => (row.created_at || row.requested_at || "").slice(0, 10) }
+      ],
+      hrPendingEnrollments,
+      { maxRows: 40 }
+    );
+  }
+}
+
+function round(n, d = 1) {
+  const f = 10 ** d;
+  return Math.round(Number(n) * f) / f;
 }
 
 function mainReportFooter(r) {
@@ -782,448 +1032,54 @@ export function exportEmployeeDashboardReport(data, filename = "employee-workfor
 }
 
 export function exportManagerDashboardReport(data, filename = "manager-workforce-report.pdf") {
-  const {
-    managerName,
-    sectionLabel,
-    kpis = [],
-    overview,
-    team = [],
-    gaps = [],
-    projects = [],
-    workload = [],
-    performance = [],
-    alerts = [],
-    matches = [],
-    matchReport,
-    catalogRequests = [],
-    projectDailyReports = [],
-    selectedProject
-  } = data;
-
-  const reportType = data.reportType || "main";
+  const reportType = data.reportType || "team_directory";
 
   const r = new ReportBuilder({
-    title: data.reportTitle || "Manager Workforce Report",
-    subtitle: data.reportSubtitle || "Team operations, skill gaps, projects, matching, and performance intelligence",
+    title: data.reportTitle || "Manager Team Report",
+    subtitle: data.reportSubtitle || "Team workforce intelligence export",
     role: "manager",
-    roleLabel: managerName ? `Manager · ${managerName}` : "Manager",
-    section: data.section || "full",
-    sectionLabel: sectionLabel || "Full dashboard"
+    roleLabel: data.managerName ? `Manager · ${data.managerName}` : "Manager",
+    section: data.section || "reports",
+    sectionLabel: data.sectionLabel || "Manager Report"
   });
 
   r.coverBlock();
-  if (isMainReport(reportType)) {
-    buildManagerMainBrief(r, data);
-    mainReportFooter(r);
-    r.save(filename);
-    return;
-  }
 
-  if (isDivisionReport(reportType, "team_ops") || isDivisionReport(reportType, "skills_gaps")) {
-    r.section("Team overview");
-    r.kpis(kpis, 4);
-    if (overview?.summary) r.paragraph(overview.summary);
-  }
-
-  if (isDivisionReport(reportType, "team_ops")) {
-  r.section("Team members", `${team.length} member(s)`);
-  r.table(
-    [
-      { header: "Name", value: (row) => row.name },
-      { header: "Role", value: (row) => row.role },
-      { header: "Dept", value: (row) => row.department },
-      { header: "Workload", value: (row) => fmtPct(row.workload_pct) },
-      { header: "Availability", value: (row) => row.availability },
-      { header: "Skills", value: (row) => (row.skills || []).slice(0, 4).map((s) => s.name).join(", ") }
-    ],
-    team,
-    { maxRows: 25 }
-  );
-  }
-
-  if (isDivisionReport(reportType, "skills_gaps")) {
-  r.section("Skill gap analysis");
-  r.table(
-    [
-      { header: "Skill", value: (row) => row.skill },
-      { header: "Gap score", value: (row) => row.gap_score ?? row.total_gap },
-      { header: "Affected", value: (row) => row.affected_employees ?? row.employees_affected },
-      { header: "Severity", value: (row) => row.severity }
-    ],
-    gaps,
-    { maxRows: 25 }
-  );
-  }
-
-  if (isDivisionReport(reportType, "projects_matching")) {
-  r.section("Projects", `${projects.length} project(s)`);
-  r.table(
-    [
-      { header: "Name", value: (row) => row.name },
-      { header: "Department", value: (row) => row.department },
-      { header: "Status", value: (row) => row.status },
-      { header: "Deadline", value: (row) => (row.deadline || "").slice(0, 10) },
-      { header: "Headcount", value: (row) => row.required_employees }
-    ],
-    projects,
-    { maxRows: 20 }
-  );
-
-  if (selectedProject) {
-    r.paragraph(`Focus project: ${selectedProject.name} (${selectedProject.department || "—"})`);
-  }
-  }
-
-  if (isDivisionReport(reportType, "team_ops")) {
-  r.section("Workload & availability");
-  r.table(
-    [
-      { header: "Employee", value: (row) => row.name || row.employee },
-      { header: "Workload %", value: (row) => row.workload_pct },
-      { header: "Projects", value: (row) => row.project_count ?? row.assignments },
-      { header: "Status", value: (row) => row.status || row.availability }
-    ],
-    workload,
-    { maxRows: 25 }
-  );
-
-  r.section("Performance monitoring");
-  r.table(
-    [
-      { header: "Employee", value: (row) => row.name || row.employee },
-      { header: "Completion", value: (row) => fmtPct(row.completion_rate_pct ?? row.completion_pct) },
-      { header: "Reports", value: (row) => row.reports_submitted },
-      { header: "Risk", value: (row) => row.risk_level || row.risk }
-    ],
-    performance,
-    { maxRows: 25 }
-  );
-
-  if (projectDailyReports?.length) {
-    r.section("Project daily reports");
-    r.table(
-      [
-        { header: "Employee", value: (row) => row.employee_name || row.employee },
-        { header: "Date", value: (row) => row.work_date },
-        { header: "Hours", value: (row) => row.hours_spent },
-        { header: "Progress", value: (row) => fmtPct(row.progress_pct) },
-        { header: "Summary", value: (row) => safeLines(row.summary, 70) }
-      ],
-      projectDailyReports,
-      { maxRows: 25 }
-    );
-  }
-
-  r.section("Alerts & risks");
-  r.table(
-    [
-      { header: "Type", value: (row) => row.type },
-      { header: "Employee", value: (row) => row.employee || row.employee_name },
-      { header: "Message", value: (row) => safeLines(row.message, 90) },
-      { header: "Severity", value: (row) => row.severity }
-    ],
-    alerts,
-    { maxRows: 20 }
-  );
-  }
-
-  if (isDivisionReport(reportType, "projects_matching")) {
-  const matchRows = matches?.length ? matches : matchReport?.candidates || [];
-  if (matchRows.length) {
-    r.section("AI employee matching", matchReport?.project?.name ? `Project: ${matchReport.project.name}` : "");
-    if (matchReport?.summary) {
-      r.kpis(
-        [
-          { label: "Team size", value: matchReport.summary.team_size },
-          { label: "Ranked", value: matchReport.summary.candidates_ranked },
-          { label: "Eligible", value: matchReport.summary.eligible_count },
-          { label: "Best match", value: fmtPct(matchReport.summary.best_match_pct) }
-        ],
-        4
-      );
-    }
-    r.table(
-      [
-        { header: "Employee", value: (row) => row.employee || row.employee_name },
-        { header: "Match %", value: (row) => fmtPct(row.match_pct) },
-        { header: "Fit", value: (row) => row.fit_class },
-        { header: "Eligible", value: (row) => (row.eligible ? "Yes" : "No") },
-        { header: "CV quality", value: (row) => fmtPct(row.cv_quality_pct) },
-        { header: "Dept match", value: (row) => (row.department_match ? "Yes" : "No") }
-      ],
-      matchRows,
-      { maxRows: 20 }
-    );
-    matchRows.slice(0, 5).forEach((m) => {
-      if (m.analysis_bullets?.length) {
-        r.paragraph(`${m.employee || "Candidate"} — rationale:`);
-        r.bullets(m.analysis_bullets.slice(0, 4));
-      }
-    });
-  }
-
-  r.section("Master data requests");
-  r.table(
-    [
-      { header: "Type", value: (row) => row.request_type },
-      { header: "Value", value: (row) => row.value },
-      { header: "Status", value: (row) => row.status },
-      { header: "By", value: (row) => row.requested_by_name || row.requested_by }
-    ],
-    catalogRequests,
-    { maxRows: 15 }
-  );
+  if (isDivisionReport(reportType, "team_directory")) {
+    buildManagerTeamDirectoryReport(r, data);
+  } else if (isDivisionReport(reportType, "team_performance")) {
+    buildManagerTeamPerformanceReport(r, data);
+  } else if (isDivisionReport(reportType, "team_training")) {
+    buildManagerTeamTrainingReport(r, data);
+  } else {
+    buildManagerTeamDirectoryReport(r, data);
   }
 
   r.save(filename);
 }
 
 export function exportHrDashboardReport(data, filename = "hr-workforce-report.pdf") {
-  const {
-    sectionLabel,
-    headerKpis = [],
-    overviewMetrics = {},
-    kpis,
-    records = [],
-    pending = [],
-    gapTable = [],
-    deptGaps = [],
-    gapSeverity = {},
-    complianceData = {},
-    trainingPlan = {},
-    hrOpenTrainings = [],
-    hrPendingEnrollments = [],
-    cvValidation = [],
-    recruitmentData = {},
-    pipelineData = {},
-    performanceData = {},
-    recentHrActions = [],
-    topGaps = []
-  } = data;
-
-  const reportType = data.reportType || "main";
+  const reportType = data.reportType || "employee_directory";
 
   const r = new ReportBuilder({
-    title: data.reportTitle || "HR Workforce Intelligence Report",
-    subtitle: data.reportSubtitle || "Organization-wide analytics, compliance, training, recruitment, and talent pipeline",
+    title: data.reportTitle || "HR Workforce Report",
+    subtitle: data.reportSubtitle || "Organization workforce intelligence export",
     role: "hr_admin",
     roleLabel: "HR Administration",
-    section: data.section || "full",
-    sectionLabel: sectionLabel || "Full dashboard"
+    section: data.section || "reports",
+    sectionLabel: data.sectionLabel || "HR Report"
   });
 
   r.coverBlock();
-  if (isMainReport(reportType)) {
-    buildHrMainBrief(r, data);
-    mainReportFooter(r);
-    r.save(filename);
-    return;
-  }
 
-  if (isDivisionReport(reportType, "executive")) {
-  r.section("Organization snapshot");
-  r.kpis(headerKpis, 4);
-  r.kpis(
-    [
-      { label: "Active projects", value: overviewMetrics.activeProjects },
-      { label: "Training in progress", value: overviewMetrics.trainingInProgress },
-      { label: "Certs expiring soon", value: overviewMetrics.certificationsExpiringSoon },
-      { label: "CV validations pending", value: data.cvPendingCount ?? 0 }
-    ],
-    4
-  );
-
-  if (kpis) {
-    r.keyValueRows([
-      ["Total users", kpis.total_users],
-      ["Employees", kpis.users_by_role?.employee],
-      ["Managers", kpis.users_by_role?.manager],
-      ["Departments tracked", overviewMetrics.departments]
-    ]);
-  }
-
-  r.section("Organization skill gaps");
-  r.kpis(
-    [
-      { label: "High severity", value: gapSeverity.HIGH || 0 },
-      { label: "Medium", value: gapSeverity.MEDIUM || 0 },
-      { label: "Low", value: gapSeverity.LOW || 0 }
-    ],
-    3
-  );
-  r.table(
-    [
-      { header: "Skill", value: (row) => row.skill },
-      { header: "Org gap", value: (row) => row.gap ?? row.total_gap },
-      { header: "Severity", value: (row) => row.severity }
-    ],
-    gapTable.length ? gapTable : topGaps,
-    { maxRows: 30 }
-  );
-
-  r.section("Gaps by department");
-  r.table(
-    [
-      { header: "Department", value: (row) => row.department },
-      { header: "Gap score", value: (row) => row.gap_score ?? row.total_gap },
-      { header: "Top skill", value: (row) => row.top_skill || row.skill }
-    ],
-    deptGaps,
-    { maxRows: 20 }
-  );
-  }
-
-  if (isDivisionReport(reportType, "talent")) {
-  r.section("Employee records", `${records.filter((x) => x.role === "employee").length} employee(s)`);
-  r.table(
-    [
-      { header: "Name", value: (row) => row.full_name },
-      { header: "Email", value: (row) => row.email },
-      { header: "Department", value: (row) => row.department },
-      { header: "Job title", value: (row) => row.job_title },
-      { header: "Primary skill", value: (row) => row.primary_skill }
-    ],
-    records.filter((x) => x.role === "employee"),
-    { maxRows: 35 }
-  );
-
-  r.section("Pending registrations", `${pending.length} awaiting approval`);
-  r.table(
-    [
-      { header: "Name", value: (row) => row.full_name },
-      { header: "Email", value: (row) => row.email },
-      { header: "Department", value: (row) => row.department },
-      { header: "Role", value: (row) => row.role }
-    ],
-    pending,
-    { maxRows: 15 }
-  );
-
-  r.section("Recruitment insights");
-  r.table(
-    [
-      { header: "Missing skill", value: (row) => row.skill },
-      { header: "Demand", value: (row) => row.demand ?? row.gap },
-      { header: "Suggestion", value: (row) => safeLines(row.suggestion || row.hiring_suggestion, 60) }
-    ],
-    recruitmentData?.missing_skills || recruitmentData?.hiring_suggestions || [],
-    { maxRows: 15 }
-  );
-
-  r.section("Talent pipeline");
-  r.table(
-    [
-      { header: "Employee", value: (row) => row.full_name || row.employee_name },
-      { header: "Readiness", value: (row) => row.readiness_band || row.readiness },
-      { header: "Target role", value: (row) => row.target_role || row.target_job_title },
-      { header: "Notes", value: (row) => safeLines(row.notes || row.summary, 60) }
-    ],
-    pipelineData?.rows || [],
-    { maxRows: 20 }
-  );
-
-  r.section("Performance review support");
-  r.table(
-    [
-      { header: "Employee", value: (row) => row.full_name || row.employee_name },
-      { header: "Gap avg", value: (row) => row.gap_avg },
-      { header: "Training", value: (row) => row.training_status || row.training_recommendation },
-      { header: "Focus", value: (row) => safeLines(row.focus_area || row.priority_skill, 50) }
-    ],
-    performanceData?.rows || [],
-    { maxRows: 20 }
-  );
-
-  r.section("CV validation queue", `${cvValidation.length} employee(s)`);
-  r.table(
-    [
-      { header: "Employee", value: (row) => row.full_name || row.employee_name },
-      { header: "Primary skill", value: (row) => row.primary_skill },
-      { header: "Status", value: (row) => row.validation_status || row.status },
-      { header: "CV skills", value: (row) => (row.cv_skills || []).slice(0, 4).join(", ") }
-    ],
-    cvValidation,
-    { maxRows: 20 }
-  );
-
-  r.section("Recent HR actions");
-  r.table(
-    [
-      { header: "Action", value: (row) => row.action || row.action_type },
-      { header: "Target", value: (row) => row.target_name || row.employee_name },
-      { header: "Status", value: (row) => row.status },
-      { header: "When", value: (row) => (row.created_at || "").slice(0, 16).replace("T", " ") }
-    ],
-    recentHrActions,
-    { maxRows: 20 }
-  );
-  }
-
-  if (isDivisionReport(reportType, "training_compliance")) {
-  const budget = trainingPlan.budget || {};
-  r.section("Training planning & budget");
-  r.kpis(
-    [
-      { label: "Budget total", value: budget.total != null ? `$${budget.total}` : "—" },
-      { label: "Committed", value: budget.committed_spend != null ? `$${budget.committed_spend}` : "—" },
-      { label: "Recommended", value: budget.recommended_investment != null ? `$${budget.recommended_investment}` : "—" },
-      { label: "Completion rate", value: fmtPct(trainingPlan.training_completion_rate_pct) }
-    ],
-    4
-  );
-  r.table(
-    [
-      { header: "Program", value: (row) => row.program || row.course },
-      { header: "Skill", value: (row) => row.skill || row.target_skill },
-      { header: "Priority", value: (row) => row.priority_score ?? row.priority },
-      { header: "Est. cost", value: (row) => row.estimated_cost ?? row.cost }
-    ],
-    trainingPlan.programs || [],
-    { maxRows: 20 }
-  );
-
-  r.section("Live training assignments");
-  r.table(
-    [
-      { header: "Employee", value: (row) => row.employee_name || row.full_name },
-      { header: "Course", value: (row) => row.course_title || row.course },
-      { header: "Progress", value: (row) => fmtPct(row.progress_pct) },
-      { header: "Status", value: (row) => row.status }
-    ],
-    hrOpenTrainings,
-    { maxRows: 25 }
-  );
-
-  r.section("Enrollment requests pending", `${hrPendingEnrollments.length} request(s)`);
-  r.table(
-    [
-      { header: "Employee", value: (row) => row.employee_name },
-      { header: "Course", value: (row) => row.course },
-      { header: "Skill", value: (row) => row.skill },
-      { header: "Requested", value: (row) => (row.created_at || "").slice(0, 10) }
-    ],
-    hrPendingEnrollments,
-    { maxRows: 20 }
-  );
-
-  r.section("Certification & compliance");
-  r.kpis(
-    [
-      { label: "Expiring soon", value: complianceData?.alerts?.expiring_soon ?? 0 },
-      { label: "Missing certs", value: complianceData?.alerts?.missing ?? 0 }
-    ],
-    2
-  );
-  r.table(
-    [
-      { header: "Employee", value: (row) => row.employee_name || row.full_name },
-      { header: "Certification", value: (row) => row.certification },
-      { header: "Status", value: (row) => row.status },
-      { header: "Expires", value: (row) => (row.expires_at || row.valid_until || "").slice(0, 10) }
-    ],
-    complianceData?.rows || [],
-    { maxRows: 25 }
-  );
+  if (isDivisionReport(reportType, "employee_directory")) {
+    buildHrEmployeeDirectoryReport(r, data);
+  } else if (isDivisionReport(reportType, "employee_performance")) {
+    buildHrEmployeePerformanceReport(r, data);
+  } else if (isDivisionReport(reportType, "training_active")) {
+    buildHrTrainingActiveReport(r, data);
+  } else {
+    buildHrEmployeeDirectoryReport(r, data);
   }
 
   r.save(filename);

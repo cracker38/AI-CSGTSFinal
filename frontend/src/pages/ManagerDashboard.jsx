@@ -433,6 +433,7 @@ export default function ManagerDashboard() {
   const [hasRunMatching, setHasRunMatching] = useState(false);
   const [workload, setWorkload] = useState([]);
   const [performance, setPerformance] = useState([]);
+  const [teamTraining, setTeamTraining] = useState([]);
   const [alerts, setAlerts] = useState([]);
   const [catalogRequests, setCatalogRequests] = useState([]);
   const [requestForm, setRequestForm] = useState({ request_type: "department", value: "" });
@@ -473,6 +474,7 @@ export default function ManagerDashboard() {
         departmentsRes,
         workloadRes,
         performanceRes,
+        teamTrainingRes,
         alertsRes,
         requestsRes
       ] = await Promise.all([
@@ -485,6 +487,7 @@ export default function ManagerDashboard() {
         api.get("/manager/departments"),
         api.get("/manager/workload"),
         api.get("/manager/performance"),
+        api.get("/manager/team-training"),
         api.get("/manager/alerts"),
         api.get("/master-data/requests")
       ]);
@@ -497,6 +500,7 @@ export default function ManagerDashboard() {
       setAllDepartments(departmentsRes.data || []);
       setWorkload(workloadRes.data);
       setPerformance(performanceRes.data);
+      setTeamTraining(teamTrainingRes.data || []);
       setAlerts(alertsRes.data);
       setCatalogRequests(requestsRes.data || []);
     } catch (err) {
@@ -855,6 +859,7 @@ export default function ManagerDashboard() {
           projects,
           workload,
           performance,
+          teamTraining,
           alerts,
           matches,
           matchReport,
@@ -1572,6 +1577,9 @@ export default function ManagerDashboard() {
                 reports={MANAGER_REPORTS}
                 onDownload={downloadReport}
                 downloadingId={reportDownloadingId}
+                layout="three"
+                showMainBadge={false}
+                headerSubtitle="Three professional PDF divisions for team leadership — complete team directory, performance scores for direct reports, and everyone currently in training with live progress."
               />
             ) : null}
           </Grid>

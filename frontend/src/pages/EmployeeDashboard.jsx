@@ -34,9 +34,6 @@ import { api } from "../api/client";
 import { useSearchParams } from "react-router-dom";
 import { exportRowsToCsv } from "../utils/csvExport";
 import { exportElementToPdf } from "../utils/pdfExport";
-import { exportEmployeeDashboardReportLazy } from "../utils/dashboardReportPdfLazy";
-import DashboardReportPanel from "../components/DashboardReportPanel";
-import { EMPLOYEE_REPORTS } from "../constants/dashboardReports";
 import { getChartTheme } from "../utils/chartTheme";
 import { useThemeMode } from "../theme/ThemeModeContext";
 import { getApiErrorMessage } from "../utils/apiError";
@@ -188,8 +185,7 @@ const SECTIONS = [
   { key: "progress", label: "Training progress" },
   { key: "career", label: "Career paths" },
   { key: "goals", label: "Goals & development plan" },
-  { key: "notifications", label: "Notifications" },
-  { key: "reports", label: "Report" }
+  { key: "notifications", label: "Notifications" }
 ];
 
 const SECTION_KEYS = new Set(SECTIONS.map((s) => s.key));
@@ -373,7 +369,6 @@ export default function EmployeeDashboard() {
   const [careerBusy, setCareerBusy] = useState(false);
   const [snackbar, setSnackbar] = useState({ open: false, message: "" });
   const [enrollingKey, setEnrollingKey] = useState("");
-  const [reportDownloadingId, setReportDownloadingId] = useState("");
   const { mode } = useThemeMode();
   const { colors, tooltipStyle } = getChartTheme(mode);
   const gapChartRows = useMemo(() => (gaps?.chart || []).filter((r) => Number(r.gap) > 0).slice(0, 14), [gaps]);
@@ -756,44 +751,6 @@ export default function EmployeeDashboard() {
         { header: "Next Plan", value: (r) => r.next_plan || "" }
       ]
     );
-  }
-
-  async function downloadReport(report) {
-    setReportDownloadingId(report.id);
-    setError("");
-    try {
-      await exportEmployeeDashboardReportLazy(
-        {
-          userName: profile?.basic?.name || overview?.welcome_name,
-          section: "reports",
-          sectionLabel: report.title,
-          reportType: report.id,
-          reportTitle: report.title,
-          reportSubtitle: report.description,
-          kpis: headerKpis.map((k) => ({ label: k.label, value: k.value })),
-          profile,
-          intel,
-          skills,
-          gaps,
-          projects,
-          recommendations,
-          trainingProgress,
-          goals,
-          complianceRequirements,
-          notifications,
-          careerPaths,
-          projectReports,
-          experienceTimeline: profile?.experience_timeline || [],
-          experienceYears: profile?.experience_years || intel?.cv_signal?.experience_years_hint
-        },
-        report.filename
-      );
-      setSnackbar({ open: true, message: `${report.title} downloaded.` });
-    } catch (err) {
-      setError(getApiErrorMessage(err, "Could not generate report PDF"));
-    } finally {
-      setReportDownloadingId("");
-    }
   }
 
   async function exportWeeklyReportsPdf() {
@@ -2271,15 +2228,6 @@ export default function EmployeeDashboard() {
                   ))}
                 </Stack>
               </CardContent></Card>
-            ) : null}
-
-            {!loading && activeSection === "reports" ? (
-              <DashboardReportPanel
-                roleLabel="Employee"
-                reports={EMPLOYEE_REPORTS}
-                onDownload={downloadReport}
-                downloadingId={reportDownloadingId}
-              />
             ) : null}
           </Grid>
         </Grid>

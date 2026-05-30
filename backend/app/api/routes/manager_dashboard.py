@@ -18,12 +18,14 @@ from app.models.manager_project import (
     ProjectSkillRequirement,
     ProjectStatus,
 )
+from app.models.hr_action import HrAction
 from app.models.master_data import DepartmentCatalog, JobTitleCatalog
 from app.models.skill import Skill
 from app.models.user import AccountStatus, User, UserRole
 from app.models.user_skill import UserSkill
 from app.services.skill_normalization import normalize_skill_name
 from app.services.job_matching import _normalize_title, build_project_match_report
+from app.services.training_assignments import refresh_stale_training_sessions_global, training_assignment_to_progress_item
 from app.services.workforce_analytics import manager_employee_performance, team_weighted_gap_score
 
 router = APIRouter()
@@ -643,6 +645,55 @@ def performance(
             }
         )
     return sorted(items, key=lambda x: x["performance_score"], reverse=True)
+
+
+@router.get("/team-training")
+def team_training(
+    db: Session = Depends(get_db),
+    manager: User = Depends(require_roles(UserRole.manager)),
+) -> list[dict]:
+    """Active and pending training assignments for employees on this manager's team."""
+    team = _team_query(db, manager.id).all()
+    team_ids = [u.id for u in team]
+    if not team_ids:
+        return []
+    refresh_stale_training_sessions_global(db)
+    rows = (
+        db.query(HrAction, User)
+        .join(User, User.id == HrAction.target_user_id)
+        .filter(
+            HrAction.target_user_id.in_(team_ids),
+            HrAction.action_type == "training_assign",
+            HrAction.status.in_(["pending", "assigned", "in_progress"]),
+        )
+        .order_by(HrAction.updated_at.desc())
+        .limit(200)
+        .all()
+    )
+    out = []
+    for action, employee in rows:
+        item = training_assignment_to_progress_item(action)
+        out.append(
+            {
+                "id": item["id"],
+                "employee_id": str(employee.id),
+                "employee_name": employee.full_name,
+                "employee_email": employee.email,
+                "department": employee.department,
+                "program_name": item["course"],
+                "target_skill": item["skill"],
+                "progress_pct": item["progress_pct"],
+                "status": item["status"],
+                "learning_state": item["learning_state"],
+                "session_active": item["session_active"],
+                "attendance_tier": item["attendance_tier"],
+                "total_learning_seconds": item["total_learning_seconds"],
+                "total_learning_display": item["total_learning_display"],
+                "sessions_completed": item["sessions_completed"],
+                "updated_at": action.updated_at.isoformat() if action.updated_at else None,
+            }
+        )
+    return out
 
 
 @router.get("/alerts")

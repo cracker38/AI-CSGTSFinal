@@ -754,6 +754,7 @@ export default function HrDashboard() {
           kpis,
           records,
           pending,
+          managers,
           gapTable,
           deptGaps,
           gapSeverity,
@@ -2158,6 +2159,9 @@ export default function HrDashboard() {
                 reports={HR_REPORTS}
                 onDownload={downloadReport}
                 downloadingId={reportDownloadingId}
+                layout="three"
+                showMainBadge={false}
+                headerSubtitle="Three professional PDF divisions for HR operations — complete employee directory, organization-wide performance scores, and everyone currently in training with live progress and attendance."
               />
             ) : null}
           </Grid>

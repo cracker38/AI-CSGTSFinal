@@ -67,8 +67,7 @@ function navItemsForRole(role) {
       { label: "Training progress", to: "/app/employee?section=progress", match: "/app/employee?section=progress" },
       { label: "Career paths", to: "/app/employee?section=career", match: "/app/employee?section=career" },
       { label: "Goals & development plan", to: "/app/employee?section=goals", match: "/app/employee?section=goals" },
-      { label: "Notifications", to: "/app/employee?section=notifications", match: "/app/employee?section=notifications" },
-      { label: "Report", to: "/app/employee?section=reports", match: "/app/employee?section=reports" }
+      { label: "Notifications", to: "/app/employee?section=notifications", match: "/app/employee?section=notifications" }
     ];
   }
   if (role === "manager") {
