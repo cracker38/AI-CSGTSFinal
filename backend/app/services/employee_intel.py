@@ -20,7 +20,11 @@ from app.models.manager_project import (
 from app.models.skill import Skill
 from app.models.user import User
 from app.models.user_skill import UserSkill
-from app.services.employee_competency import build_employee_cv_competency, competency_summary_dict, employee_context_document
+from app.services.employee_competency import (
+    build_employee_cv_competency,
+    competency_summary_for_employee,
+    employee_context_document,
+)
 from app.services.required_skill_profile import required_skill_levels_for
 from app.services.skill_normalization import normalize_skill_level_map, normalize_skill_name
 
@@ -321,7 +325,7 @@ def build_employee_dashboard_intel(db: Session, user: User, profile: EmployeePro
         band_tgt, label_tgt = _readiness_band(w_imp_tgt)
 
     competency = build_employee_cv_competency(db, user, profile)
-    cv_comp = competency_summary_dict(competency)
+    cv_comp = competency_summary_for_employee(db, user, profile, competency)
     context_doc = employee_context_document(user, profile, competency.cv_text)
     ml_cos_tgt = cv_role_semantic_similarity(context_doc if len(context_doc) >= 24 else None, req_tgt)
 

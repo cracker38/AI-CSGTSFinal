@@ -27,6 +27,7 @@ from app.services.training_assignments import (
     apply_training_assignment_update,
     end_training_session,
     ensure_training_attendance_defaults,
+    reconcile_training_skill_bumps,
     refresh_stale_training_sessions,
     start_training_session,
     training_assignment_to_progress_item,
@@ -90,6 +91,9 @@ def my_skill_gaps(
     if user.role != UserRole.employee:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
     profile = _employee_profile_or_ensure(db, user)
+    if reconcile_training_skill_bumps(db, user.id, skill_source=SkillSource.ai):
+        db.commit()
+        db.refresh(profile)
     return build_employee_skill_gap_visualization(db, user, profile)
 
 
@@ -178,8 +182,11 @@ def employee_overview(
         int((row.payload or {}).get("total_learning_seconds") or 0) for row in completed_training_rows
     )
     profile_growth_index = None
+    workforce_competency_index_val = None
     if isinstance(ai.get("profile_growth_index"), (int, float)):
         profile_growth_index = round(float(ai["profile_growth_index"]), 2)
+    if isinstance(ai.get("workforce_competency_index"), (int, float)):
+        workforce_competency_index_val = round(float(ai["workforce_competency_index"]), 1)
     return {
         "welcome_name": user.full_name,
         "profile_completion_pct": round((filled / total_fields) * 100, 2),
@@ -194,6 +201,7 @@ def employee_overview(
         "completed_trainings_count": completed_trainings_count,
         "verified_learning_hours": round(verified_learning_seconds_total / 3600.0, 2),
         "profile_growth_index": profile_growth_index,
+        "workforce_competency_index": workforce_competency_index_val,
         "cv_skills_detected_count": len((profile.cv_extract or {}).get("skills") or []),
         "career_target_job_title": ai.get("target_job_title"),
         "shortlisted_projects_count": len(ai.get("selected_project_ids") or []),
@@ -706,6 +714,8 @@ def training_progress(
     if user.role != UserRole.employee:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
     refresh_stale_training_sessions(db, user.id)
+    if reconcile_training_skill_bumps(db, user.id, skill_source=SkillSource.ai):
+        db.commit()
     rows = (
         db.query(HrAction)
         .filter(HrAction.target_user_id == user.id, HrAction.action_type == "training_assign")
@@ -743,7 +753,7 @@ def employee_update_training_assignment(
             db,
             action,
             body,
-            skill_source_on_complete=SkillSource.self,
+            skill_source_on_complete=SkillSource.ai,
             require_active_session_for_progress_change=True,
             require_minimum_verified_time_to_complete=True,
             require_full_progress_for_completion=True,

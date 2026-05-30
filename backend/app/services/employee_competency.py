@@ -182,19 +182,27 @@ def effective_skill_level(
     source: str | None,
     competency: EmployeeCvCompetency,
     skill: str,
+    training_verified_level: int | None = None,
 ) -> tuple[int, dict]:
     evidence = skill_cv_evidence(competency, skill)
     cv_level = int(evidence["cv_inferred_level"])
     inv = int(inventory_level or 0)
+    if training_verified_level is not None:
+        inv = max(inv, int(training_verified_level))
     if inv > 0 and cv_level > 0:
         effective = max(inv, int(round(inv * 0.42 + cv_level * 0.58)))
     elif cv_level > 0:
         effective = cv_level
     else:
         effective = inv
+    if training_verified_level is not None and int(training_verified_level) > 0:
+        effective = max(effective, int(training_verified_level))
+        if source in (None, "self"):
+            source = "ai"
     src_w = _SOURCE_WEIGHT.get(source or "self", 0.65)
     evidence["inventory_level"] = inv
     evidence["effective_level"] = effective
+    evidence["training_verified"] = training_verified_level is not None and int(training_verified_level) > 0
     evidence["evidence_weight"] = round(src_w * (0.5 + float(evidence["cv_confidence"]) * 0.5), 3)
     return effective, evidence
 
@@ -209,4 +217,92 @@ def competency_summary_dict(competency: EmployeeCvCompetency) -> dict:
         "skills_detected": len(competency.mention_by_skill),
         "structure": competency.structure,
         "engine": "cv_nlp_competency_v3",
+    }
+
+
+def training_verified_skill_levels(profile: EmployeeProfile | None) -> dict[str, int]:
+    """Latest inventory level per skill after HR-verified training completions."""
+    if not profile:
+        return {}
+    out: dict[str, int] = {}
+    for entry in (profile.ai_profile or {}).get("training_completions") or []:
+        if not isinstance(entry, dict):
+            continue
+        canon = normalize_skill_name(str(entry.get("canonical_skill") or entry.get("target_skill") or ""))
+        lvl = int(entry.get("inventory_level_after") or 0)
+        if canon and lvl > 0:
+            out[canon] = max(out.get(canon, 0), lvl)
+    return out
+
+
+def training_competency_boost_pct(profile: EmployeeProfile | None) -> float:
+    """Additive boost applied to displayed competency after verified training."""
+    if not profile:
+        return 0.0
+    ai = profile.ai_profile or {}
+    stats = ai.get("training_stats") if isinstance(ai.get("training_stats"), dict) else {}
+    completed = int(stats.get("completed_count") or 0)
+    verified_sec = int(stats.get("total_verified_seconds") or 0)
+    return min(25.0, completed * 2.5 + min(10.0, verified_sec / 3600.0 * 2.0))
+
+
+def workforce_competency_index(
+    *,
+    cv_quality_score: float,
+    avg_skill_level: float,
+    profile_growth_index: float,
+    training_boost_pct: float,
+) -> float:
+    """Blended workforce competency index (CV + inventory + verified training)."""
+    return round(
+        min(
+            100.0,
+            cv_quality_score * 0.38
+            + avg_skill_level * 11.5
+            + profile_growth_index * 0.32
+            + training_boost_pct * 0.85,
+        ),
+        1,
+    )
+
+
+def competency_summary_for_employee(
+    db: Session,
+    user: User,
+    profile: EmployeeProfile | None,
+    competency: EmployeeCvCompetency | None = None,
+) -> dict:
+    """CV competency plus training-validated inventory growth for dashboards."""
+    competency = competency or build_employee_cv_competency(db, user, profile)
+    base = competency_summary_dict(competency)
+    boost = training_competency_boost_pct(profile)
+    adjusted_quality = round(min(100.0, float(base["quality_score"]) + boost), 1)
+    ai = (profile.ai_profile or {}) if profile else {}
+    growth = float(ai.get("profile_growth_index") or 0)
+    wci = ai.get("workforce_competency_index")
+    if wci is None and profile:
+        from app.models.user_skill import UserSkill
+
+        rows = db.query(UserSkill.level).filter(UserSkill.user_id == user.id).all()
+        avg_skill = sum(int(r[0]) for r in rows) / max(1, len(rows)) if rows else 0.0
+        wci = workforce_competency_index(
+            cv_quality_score=float(base["quality_score"]),
+            avg_skill_level=avg_skill,
+            profile_growth_index=growth,
+            training_boost_pct=boost,
+        )
+    tier = base["quality_tier"]
+    if adjusted_quality >= 72 and tier != "minimal":
+        tier = "strong"
+    elif adjusted_quality >= 48 and tier == "weak":
+        tier = "moderate"
+    return {
+        **base,
+        "quality_tier": tier,
+        "quality_score": adjusted_quality,
+        "cv_quality_score": base["quality_score"],
+        "training_competency_boost_pct": round(boost, 1),
+        "workforce_competency_index": wci,
+        "training_verified_skills": len(training_verified_skill_levels(profile)),
+        "engine": "cv_nlp_competency_v3_training_blend",
     }

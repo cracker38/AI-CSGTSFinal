@@ -18,26 +18,29 @@ export async function exportElementToPdf(
   const canvas = await html2canvas(element, {
     backgroundColor: "#ffffff",
     scale: 2,
-    useCORS: true
+    useCORS: true,
+    logging: false
   });
   const imgData = canvas.toDataURL("image/png");
   const pdf = new jsPDF("p", "mm", "a4");
   const pageWidth = 210;
   const pageHeight = 297;
+  const headerH = 22;
+  const footerH = 10;
   const imgWidth = pageWidth - 16;
   const imgHeight = (canvas.height * imgWidth) / canvas.width;
 
   let heightLeft = imgHeight;
-  let position = 24;
+  let position = headerH + 6;
 
   pdf.addImage(imgData, "PNG", 8, position, imgWidth, imgHeight);
-  heightLeft -= pageHeight - 36;
+  heightLeft -= pageHeight - headerH - footerH - 8;
 
   while (heightLeft > 0) {
-    position = heightLeft - imgHeight + 24;
+    position = heightLeft - imgHeight + headerH + 6;
     pdf.addPage();
     pdf.addImage(imgData, "PNG", 8, position, imgWidth, imgHeight);
-    heightLeft -= pageHeight - 36;
+    heightLeft -= pageHeight - headerH - footerH - 8;
   }
 
   const totalPages = pdf.getNumberOfPages();
@@ -47,24 +50,29 @@ export async function exportElementToPdf(
   for (let i = 1; i <= totalPages; i += 1) {
     pdf.setPage(i);
 
-    // Header
-    pdf.setFillColor(245, 247, 250);
-    pdf.rect(0, 0, pageWidth, 16, "F");
+    pdf.setFillColor(248, 250, 252);
+    pdf.rect(0, 0, pageWidth, headerH, "F");
+    pdf.setFillColor(25, 118, 210);
+    pdf.rect(0, 0, 3, headerH, "F");
     pdf.setTextColor(25, 35, 55);
-    pdf.setFontSize(10);
-    pdf.text(logoText, 8, 6.5);
+    pdf.setFont("helvetica", "bold");
+    pdf.setFontSize(9);
+    pdf.text(logoText, 8, 8);
     pdf.setFontSize(11);
-    pdf.text(title, 8, 12);
-    pdf.setFontSize(9);
-    pdf.text(metaText, pageWidth - 8, 6.5, { align: "right" });
-    pdf.text(dateText, pageWidth - 8, 12, { align: "right" });
+    pdf.text(title, 8, 15);
+    pdf.setFont("helvetica", "normal");
+    pdf.setFontSize(8);
+    pdf.setTextColor(100, 116, 139);
+    pdf.text(metaText, pageWidth - 8, 8, { align: "right" });
+    pdf.text(dateText, pageWidth - 8, 15, { align: "right" });
+    pdf.setDrawColor(226, 232, 240);
+    pdf.line(8, headerH + 1, pageWidth - 8, headerH + 1);
 
-    // Footer
-    pdf.setFillColor(245, 247, 250);
-    pdf.rect(0, pageHeight - 10, pageWidth, 10, "F");
-    pdf.setTextColor(60, 72, 88);
-    pdf.setFontSize(9);
-    pdf.text("Confidential - Workforce Intelligence", 8, pageHeight - 4);
+    pdf.setFillColor(248, 250, 252);
+    pdf.rect(0, pageHeight - footerH, pageWidth, footerH, "F");
+    pdf.setTextColor(100, 116, 139);
+    pdf.setFontSize(8);
+    pdf.text("Confidential — AI-CSGTS Workforce Intelligence", 8, pageHeight - 4);
     pdf.text(`Page ${i} of ${totalPages}`, pageWidth - 8, pageHeight - 4, { align: "right" });
   }
 

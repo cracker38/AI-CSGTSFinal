@@ -12,9 +12,15 @@ from app.models.employee_profile import EmployeeProfile
 from app.models.hr_action import HrAction
 from app.models.manager_project import ManagerProject, ProjectAssignment, ProjectSkillRequirement, ProjectStatus
 from app.models.skill import Skill
+from app.models.user import User
 from app.models.user_skill import SkillSource, UserSkill
 from app.schemas.hr_action import MaterialReadingProgressUpdate, TrainingAssignmentProgressUpdate
-from app.services.skill_normalization import normalize_skill_name
+from app.services.employee_competency import (
+    build_employee_cv_competency,
+    competency_summary_dict,
+    training_competency_boost_pct,
+    workforce_competency_index,
+)
 from app.services.training_catalog import resolve_official_course_link
 
 # Heartbeat gap after which an open session is auto-paused (employee idle / closed browser).
@@ -469,17 +475,17 @@ def _bump_skill_for_training(
     source: SkillSource,
     *,
     boost: int = 1,
-) -> tuple[str, int]:
+) -> tuple[str, int, int]:
     """
     Raise UserSkill for the target skill using canonical names (same keys as gap engine).
-    Returns (canonical_skill, new_level). Missing profile → ("", 0).
+    Returns (canonical_skill, new_level, previous_level). Missing profile → ("", 0, 0).
     """
     raw = (target_skill or "").strip()
     if not raw:
-        return "", 0
+        return "", 0, 0
     canon = normalize_skill_name(raw) or raw.lower().strip()
     if not canon:
-        return "", 0
+        return "", 0, 0
     boost = max(1, min(3, int(boost)))
 
     skill = db.query(Skill).filter(Skill.name == canon).one_or_none()
@@ -492,14 +498,15 @@ def _bump_skill_for_training(
 
     row = db.query(UserSkill).filter(UserSkill.user_id == user_id, UserSkill.skill_id == skill.id).one_or_none()
     if row:
-        row.level = min(5, int(row.level) + boost)
+        prev = int(row.level)
+        row.level = min(5, prev + boost)
         row.source = source
         db.add(row)
-        return canon, int(row.level)
+        return canon, int(row.level), prev
 
     initial = min(5, max(2, boost))
     db.add(UserSkill(user_id=user_id, skill_id=skill.id, level=initial, source=source))
-    return canon, initial
+    return canon, initial, 0
 
 
 def _apply_training_project_impacts(db: Session, user_id: uuid.UUID, canon: str, new_level: int) -> None:
@@ -545,6 +552,131 @@ def _apply_training_project_impacts(db: Session, user_id: uuid.UUID, canon: str,
     db.add(profile)
 
 
+def _refresh_workforce_competency_index(db: Session, user_id: uuid.UUID) -> float | None:
+    profile = db.query(EmployeeProfile).filter(EmployeeProfile.user_id == user_id).one_or_none()
+    if not profile:
+        return None
+    user = db.query(User).filter(User.id == user_id).one_or_none()
+    if not user:
+        return None
+    competency = build_employee_cv_competency(db, user, profile)
+    base = competency_summary_dict(competency)
+    rows = db.query(UserSkill.level).filter(UserSkill.user_id == user_id).all()
+    avg_skill = sum(int(r[0]) for r in rows) / max(1, len(rows)) if rows else 0.0
+    ai = dict(profile.ai_profile or {})
+    growth = float(ai.get("profile_growth_index") or 0)
+    boost = training_competency_boost_pct(profile)
+    wci = workforce_competency_index(
+        cv_quality_score=float(base["quality_score"]),
+        avg_skill_level=avg_skill,
+        profile_growth_index=growth,
+        training_boost_pct=boost,
+    )
+    ai["workforce_competency_index"] = wci
+    profile.ai_profile = ai
+    db.add(profile)
+    return wci
+
+
+def _notify_competency_gain(
+    db: Session,
+    user_id: uuid.UUID,
+    *,
+    skill: str,
+    previous_level: int,
+    new_level: int,
+    program_name: str,
+) -> None:
+    profile = db.query(EmployeeProfile).filter(EmployeeProfile.user_id == user_id).one_or_none()
+    if not profile or new_level <= previous_level:
+        return
+    ai = dict(profile.ai_profile or {})
+    notes = list(ai.get("employee_notifications") or [])
+    delta = new_level - previous_level
+    notes.insert(
+        0,
+        {
+            "type": "competency_gain",
+            "message": (
+                f"Competency increased: {skill.replace('-', ' ').title()} "
+                f"level {previous_level or '—'} → {new_level} after completing {program_name}."
+            ),
+            "skill": skill,
+            "previous_level": previous_level,
+            "new_level": new_level,
+            "level_delta": delta,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+    ai["employee_notifications"] = notes[:40]
+    profile.ai_profile = ai
+    db.add(profile)
+
+
+def reconcile_training_skill_bumps(db: Session, user_id: uuid.UUID, *, skill_source: SkillSource) -> bool:
+    """
+    Idempotent backfill: completed trainings missing inventory bumps still raise competency.
+    Returns True if any row was updated (caller may commit).
+    """
+    profile = db.query(EmployeeProfile).filter(EmployeeProfile.user_id == user_id).one_or_none()
+    if not profile:
+        return False
+    ai = dict(profile.ai_profile or {})
+    completed_ids = {
+        str(entry.get("hr_action_id"))
+        for entry in (ai.get("training_completions") or [])
+        if isinstance(entry, dict) and entry.get("hr_action_id")
+    }
+    rows = (
+        db.query(HrAction)
+        .filter(
+            HrAction.target_user_id == user_id,
+            HrAction.action_type == "training_assign",
+            HrAction.status == "completed",
+        )
+        .all()
+    )
+    changed = False
+    for action in rows:
+        if str(action.id) in completed_ids:
+            continue
+        payload = ensure_training_attendance_defaults(dict(action.payload or {}))
+        program = str(payload.get("program_name") or "Training Program")
+        skill_name = str(payload.get("target_skill") or "general")
+        verified_sec = int(payload.get("total_learning_seconds") or 0)
+        boost = _training_level_boost_from_verified_time(verified_sec)
+        canon, new_lvl, prev_lvl = _bump_skill_for_training(
+            db, user_id, skill_name, skill_source, boost=boost
+        )
+        if not canon or new_lvl <= 0:
+            continue
+        _append_completion_profile(
+            db,
+            user_id,
+            program,
+            skill_name,
+            action.id,
+            canonical_skill=canon,
+            verified_seconds=verified_sec,
+            level_boost=boost,
+            new_level=new_lvl,
+            previous_level=prev_lvl,
+        )
+        _apply_training_project_impacts(db, user_id, canon, new_lvl)
+        _notify_competency_gain(
+            db,
+            user_id,
+            skill=canon,
+            previous_level=prev_lvl,
+            new_level=new_lvl,
+            program_name=program,
+        )
+        changed = True
+    if changed:
+        _refresh_workforce_competency_index(db, user_id)
+    return changed
+
+
 def _append_completion_profile(
     db: Session,
     user_id: uuid.UUID,
@@ -556,6 +688,7 @@ def _append_completion_profile(
     verified_seconds: int,
     level_boost: int,
     new_level: int,
+    previous_level: int = 0,
 ) -> None:
     profile = db.query(EmployeeProfile).filter(EmployeeProfile.user_id == user_id).one_or_none()
     if not profile:
@@ -570,6 +703,7 @@ def _append_completion_profile(
         "completed_at": datetime.now(timezone.utc).isoformat(),
         "verified_learning_seconds": int(verified_seconds),
         "level_boost": int(level_boost),
+        "inventory_level_before": int(previous_level),
         "inventory_level_after": int(new_level),
     }
     hist.append(entry)
@@ -671,7 +805,7 @@ def apply_training_assignment_update(
         skill_name = str(payload.get("target_skill") or "general")
         verified_sec = int(payload.get("total_learning_seconds") or 0)
         boost = _training_level_boost_from_verified_time(verified_sec)
-        canon, new_lvl = _bump_skill_for_training(
+        canon, new_lvl, prev_lvl = _bump_skill_for_training(
             db, action.target_user_id, skill_name, skill_source_on_complete, boost=boost
         )
         if canon and new_lvl > 0:
@@ -685,8 +819,25 @@ def apply_training_assignment_update(
                 verified_seconds=verified_sec,
                 level_boost=boost,
                 new_level=new_lvl,
+                previous_level=prev_lvl,
             )
             _apply_training_project_impacts(db, action.target_user_id, canon, new_lvl)
+            _notify_competency_gain(
+                db,
+                action.target_user_id,
+                skill=canon,
+                previous_level=prev_lvl,
+                new_level=new_lvl,
+                program_name=program,
+            )
+            wci = _refresh_workforce_competency_index(db, action.target_user_id)
+            payload["competency_impact"] = {
+                "skill": canon,
+                "previous_level": prev_lvl,
+                "new_level": new_lvl,
+                "level_boost": boost,
+                "workforce_competency_index": wci,
+            }
     else:
         if body.progress_pct is not None:
             new_p = int(body.progress_pct)

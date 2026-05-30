@@ -37,7 +37,9 @@ import CloudUploadIcon from "@mui/icons-material/CloudUpload";
 import { useSearchParams } from "react-router-dom";
 import AppShell from "../components/AppShell";
 import { api } from "../api/client";
-import { exportElementToPdfLazy } from "../utils/pdfExportLazy";
+import { exportHrDashboardReportLazy } from "../utils/dashboardReportPdfLazy";
+import DashboardReportPanel from "../components/DashboardReportPanel";
+import { HR_REPORTS } from "../constants/dashboardReports";
 import { getChartTheme } from "../utils/chartTheme";
 import { exportRowsToCsv } from "../utils/csvExport";
 import { useThemeMode } from "../theme/ThemeModeContext";
@@ -53,7 +55,8 @@ const SECTIONS = [
   { key: "pipeline", label: "Talent pipeline" },
   { key: "cv", label: "CV validation & skill verification" },
   { key: "performance", label: "Performance review support" },
-  { key: "records", label: "Employee records" }
+  { key: "records", label: "Employee records" },
+  { key: "reports", label: "Report" }
 ];
 
 const HR_SECTION_KEYS = new Set(SECTIONS.map((s) => s.key));
@@ -164,7 +167,6 @@ function LiveTrainingAssignmentCard({ row, progressValue, onProgressChange, onUp
 export default function HrDashboard() {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down("md"));
-  const exportRef = useRef(null);
   const trainingMaterialFileRef = useRef(null);
   const [searchParams, setSearchParams] = useSearchParams();
   // URL is the source of truth for the active tab (avoids useEffect loops between searchParams and state).
@@ -226,6 +228,7 @@ export default function HrDashboard() {
   const [hrOpenTrainings, setHrOpenTrainings] = useState([]);
   const [hrPendingEnrollments, setHrPendingEnrollments] = useState([]);
   const [hrTrainPct, setHrTrainPct] = useState({});
+  const [reportDownloadingId, setReportDownloadingId] = useState("");
   const { mode } = useThemeMode();
   const { colors, tooltipStyle } = getChartTheme(mode);
   const activeSectionLabel = useMemo(
@@ -735,6 +738,47 @@ export default function HrDashboard() {
     };
   }, [kpis, records, recruitmentData]);
 
+  async function downloadReport(report) {
+    setReportDownloadingId(report.id);
+    setError("");
+    try {
+      await exportHrDashboardReportLazy(
+        {
+          section: "reports",
+          sectionLabel: report.title,
+          reportType: report.id,
+          reportTitle: report.title,
+          reportSubtitle: report.description,
+          headerKpis,
+          overviewMetrics,
+          kpis,
+          records,
+          pending,
+          gapTable,
+          deptGaps,
+          gapSeverity,
+          complianceData,
+          trainingPlan,
+          hrOpenTrainings,
+          hrPendingEnrollments,
+          cvValidation,
+          cvPendingCount,
+          recruitmentData,
+          pipelineData,
+          performanceData,
+          recentHrActions,
+          topGaps
+        },
+        report.filename
+      );
+      toastOk(`${report.title} downloaded.`);
+    } catch (err) {
+      setError(getApiErrorMessage(err, "Could not generate report PDF"));
+    } finally {
+      setReportDownloadingId("");
+    }
+  }
+
   function SectionPanel({ children }) {
     return (
       <Card
@@ -792,19 +836,6 @@ export default function HrDashboard() {
                 <Button variant="outlined" onClick={() => load()} disabled={refreshing} fullWidth={isMobile}>
                   {refreshing ? "Refreshing…" : "Refresh data"}
                 </Button>
-                <Button
-                  variant="contained"
-                  fullWidth={isMobile}
-                  onClick={() =>
-                    exportElementToPdfLazy(exportRef.current, `hr-${activeSection}.pdf`, {
-                      role: "hr_admin",
-                      section: activeSection,
-                      title: "HR Dashboard Report"
-                    })
-                  }
-                >
-                  Export PDF
-                </Button>
               </Stack>
             </Stack>
           </CardContent>
@@ -852,21 +883,6 @@ export default function HrDashboard() {
 
         <Grid container spacing={2}>
           <Grid item xs={12}>
-            <Stack direction="row" justifyContent="flex-end" sx={{ mb: 1 }}>
-              <Button
-                variant="outlined"
-                onClick={() =>
-                  exportElementToPdfLazy(exportRef.current, `hr-${activeSection}.pdf`, {
-                    role: "hr_admin",
-                    section: activeSection,
-                    title: "HR Dashboard Report"
-                  })
-                }
-              >
-                Export PDF
-              </Button>
-            </Stack>
-            <div ref={exportRef}>
             {initialLoading ? (
               <SectionPanel>
                 <Stack direction="row" spacing={2} alignItems="center">
@@ -2135,7 +2151,15 @@ export default function HrDashboard() {
                 </CardContent>
               </Card>
             ) : null}
-            </div>
+
+            {!initialLoading && activeSection === "reports" ? (
+              <DashboardReportPanel
+                roleLabel="HR"
+                reports={HR_REPORTS}
+                onDownload={downloadReport}
+                downloadingId={reportDownloadingId}
+              />
+            ) : null}
           </Grid>
         </Grid>
       </Stack>

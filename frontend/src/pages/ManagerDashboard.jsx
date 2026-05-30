@@ -29,6 +29,9 @@ import { useSearchParams } from "react-router-dom";
 import AppShell from "../components/AppShell";
 import { api } from "../api/client";
 import { getApiErrorMessage } from "../utils/apiError";
+import { exportManagerDashboardReportLazy } from "../utils/dashboardReportPdfLazy";
+import DashboardReportPanel from "../components/DashboardReportPanel";
+import { MANAGER_REPORTS } from "../constants/dashboardReports";
 
 const PROJECT_SKILL_LEVELS = [1, 2, 3, 4, 5];
 const PROJECT_SKILL_WEIGHTS = [0.5, 1, 1.5, 2, 2.5, 3];
@@ -45,7 +48,8 @@ const SECTIONS = [
   { key: "requests", label: "Master data requests" },
   { key: "workload", label: "Workload & availability" },
   { key: "performance", label: "Performance monitoring" },
-  { key: "alerts", label: "Alerts & risks" }
+  { key: "alerts", label: "Alerts & risks" },
+  { key: "reports", label: "Report" }
 ];
 
 function fitClassTextColor(fitClass) {
@@ -408,6 +412,10 @@ export default function ManagerDashboard() {
     if (SECTIONS.some((s) => s.key === section)) return section;
     return "home";
   }, [searchParams]);
+  const activeSectionLabel = useMemo(
+    () => SECTIONS.find((s) => s.key === activeSection)?.label ?? "Manager overview",
+    [activeSection]
+  );
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -449,6 +457,7 @@ export default function ManagerDashboard() {
     requirements: [{ skill_id: "", required_level: 3, weight: 1 }]
   });
   const [projectFormError, setProjectFormError] = useState("");
+  const [reportDownloadingId, setReportDownloadingId] = useState("");
 
   async function load() {
     setLoading(true);
@@ -827,10 +836,47 @@ export default function ManagerDashboard() {
     return "";
   }
 
+  async function downloadReport(report) {
+    setReportDownloadingId(report.id);
+    setError("");
+    try {
+      await exportManagerDashboardReportLazy(
+        {
+          managerName: overview?.manager_name,
+          section: "reports",
+          sectionLabel: report.title,
+          reportType: report.id,
+          reportTitle: report.title,
+          reportSubtitle: report.description,
+          kpis,
+          overview,
+          team,
+          gaps,
+          projects,
+          workload,
+          performance,
+          alerts,
+          matches,
+          matchReport,
+          catalogRequests,
+          projectDailyReports,
+          selectedProject
+        },
+        report.filename
+      );
+      setAssignSuccess(`${report.title} downloaded.`);
+    } catch (err) {
+      setError(getApiErrorMessage(err, "Could not generate report PDF"));
+    } finally {
+      setReportDownloadingId("");
+    }
+  }
+
   return (
     <AppShell title="Manager Dashboard">
       <Stack spacing={2}>
         {error ? <Alert severity="error">{error}</Alert> : null}
+        {assignSuccess ? <Alert severity="success">{assignSuccess}</Alert> : null}
 
         <Grid container spacing={2}>
           <Grid item xs={12}>
@@ -1518,6 +1564,15 @@ export default function ManagerDashboard() {
                   {alerts.length === 0 ? <Alert severity="success">No current risks.</Alert> : alerts.map((a, idx) => <Alert key={`${a.type}-${idx}`} severity={a.severity === "critical" ? "error" : a.severity === "moderate" ? "warning" : "info"}>{a.message}</Alert>)}
                 </Stack>
               </CardContent></Card>
+            ) : null}
+
+            {!loading && activeSection === "reports" ? (
+              <DashboardReportPanel
+                roleLabel="Manager"
+                reports={MANAGER_REPORTS}
+                onDownload={downloadReport}
+                downloadingId={reportDownloadingId}
+              />
             ) : null}
           </Grid>
         </Grid>

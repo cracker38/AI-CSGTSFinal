@@ -24,6 +24,7 @@ import { clearAuth, getAuth } from "../auth/authStore";
 import { canAccessRoleRoute } from "../auth/roleRouting";
 import { useThemeMode } from "../theme/ThemeModeContext";
 import { consumeFreshReloadNotice, reloadFreshPage } from "../utils/reloadFresh";
+import BrandLogo from "./BrandLogo";
 
 const drawerWidth = 260;
 
@@ -50,7 +51,8 @@ function navItemsForRole(role) {
       { label: "Talent pipeline", to: "/app/hr?section=pipeline", match: "/app/hr?section=pipeline" },
       { label: "CV validation & skill verification", to: "/app/hr?section=cv", match: "/app/hr?section=cv" },
       { label: "Performance review support", to: "/app/hr?section=performance", match: "/app/hr?section=performance" },
-      { label: "Employee records", to: "/app/hr?section=records", match: "/app/hr?section=records" }
+      { label: "Employee records", to: "/app/hr?section=records", match: "/app/hr?section=records" },
+      { label: "Report", to: "/app/hr?section=reports", match: "/app/hr?section=reports" }
     ];
   }
   if (role === "employee") {
@@ -65,7 +67,8 @@ function navItemsForRole(role) {
       { label: "Training progress", to: "/app/employee?section=progress", match: "/app/employee?section=progress" },
       { label: "Career paths", to: "/app/employee?section=career", match: "/app/employee?section=career" },
       { label: "Goals & development plan", to: "/app/employee?section=goals", match: "/app/employee?section=goals" },
-      { label: "Notifications", to: "/app/employee?section=notifications", match: "/app/employee?section=notifications" }
+      { label: "Notifications", to: "/app/employee?section=notifications", match: "/app/employee?section=notifications" },
+      { label: "Report", to: "/app/employee?section=reports", match: "/app/employee?section=reports" }
     ];
   }
   if (role === "manager") {
@@ -80,7 +83,8 @@ function navItemsForRole(role) {
       { label: "Master data requests", to: "/app/manager?section=requests", match: "/app/manager?section=requests" },
       { label: "Workload & availability", to: "/app/manager?section=workload", match: "/app/manager?section=workload" },
       { label: "Performance monitoring", to: "/app/manager?section=performance", match: "/app/manager?section=performance" },
-      { label: "Alerts & risks", to: "/app/manager?section=alerts", match: "/app/manager?section=alerts" }
+      { label: "Alerts & risks", to: "/app/manager?section=alerts", match: "/app/manager?section=alerts" },
+      { label: "Report", to: "/app/manager?section=reports", match: "/app/manager?section=reports" }
     ];
   }
   if (canAccessRoleRoute(role, "employee")) {
@@ -165,10 +169,8 @@ export default function AppShell({ title, children }) {
             background: "linear-gradient(135deg, rgba(25,118,210,0.12) 0%, rgba(46,125,50,0.10) 100%)"
           }}
         >
-          <Typography variant="caption" sx={{ color: "text.secondary", letterSpacing: "0.08em" }}>
-            AI-CSGTS
-          </Typography>
-          <Typography variant="subtitle2" fontWeight={800}>
+          <BrandLogo size="sm" />
+          <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1, letterSpacing: "0.06em" }}>
             Navigation
           </Typography>
         </Box>
@@ -227,7 +229,8 @@ export default function AppShell({ title, children }) {
               <MenuIcon />
             </IconButton>
           ) : null}
-          <Typography variant="h6" sx={{ flexGrow: 1 }}>
+          <BrandLogo size="sm" showTagline={false} variant="icon" />
+          <Typography variant="h6" sx={{ flexGrow: 1, ml: 1 }}>
             {title || "AI-CSGTS"}
           </Typography>
           <IconButton color="inherit" onClick={toggleMode}>

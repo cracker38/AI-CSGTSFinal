@@ -13,9 +13,11 @@ from app.models.user import User
 from app.models.user_skill import UserSkill
 from app.services.employee_competency import (
     build_employee_cv_competency,
+    competency_summary_for_employee,
     effective_skill_level,
     employee_context_document,
     skill_cv_evidence,
+    training_verified_skill_levels,
 )
 from app.services.required_skill_profile import required_skill_profile_with_weights
 from app.services.skill_normalization import normalize_skill_level_map, normalize_skill_name
@@ -304,13 +306,11 @@ def build_employee_training_recommendations(
         )
 
     recs.sort(key=lambda r: (r["priority_score"], r["match_pct"], r["gap"]), reverse=True)
+    cv_comp = competency_summary_for_employee(db, user, profile, competency)
     return {
         "recommendations": recs[:max_recommendations],
         "cv_competency": {
-            "quality_tier": competency.quality_tier,
-            "quality_score": competency.quality_score,
-            "document_confidence_pct": round(competency.doc_confidence * 100, 1),
-            "skills_detected": len(competency.mention_by_skill),
+            **cv_comp,
             "role_semantic_similarity_pct": int(round(role_cosine * 100)) if role_cosine is not None else None,
         },
         "engine": "employee_training_cv_competency_v2",

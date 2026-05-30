@@ -12,10 +12,10 @@ from app.models.user import User
 from app.models.user_skill import UserSkill
 from app.services.employee_competency import (
     build_employee_cv_competency,
-    competency_summary_dict,
+    competency_summary_for_employee,
     effective_skill_level,
     employee_context_document,
-    skill_cv_evidence,
+    training_verified_skill_levels,
 )
 from app.services.required_skill_profile import required_skill_profile_with_weights
 from app.services.skill_normalization import normalize_skill_level_map, normalize_skill_name
@@ -59,6 +59,7 @@ def _enrich_gap_row(
         "cv_confidence_pct": round(float(cv_evidence.get("cv_confidence") or 0) * 100, 1),
         "in_experience_section": cv_evidence.get("in_experience_section", False),
         "cv_inferred_level": cv_evidence.get("cv_inferred_level", 0),
+        "training_verified": cv_evidence.get("training_verified", False),
         "status": "gap" if g.gap > 0 else "meets_or_exceeds",
         "competency_note": _gap_competency_note(g, cv_evidence, effective_level),
     }
@@ -66,7 +67,14 @@ def _enrich_gap_row(
 
 def _gap_competency_note(g: GapItem, cv_evidence: dict, effective_level: int) -> str:
     if g.gap <= 0:
+        if cv_evidence.get("training_verified"):
+            return "Meets HR target — competency validated through completed training."
         return "Meets HR target in validated inventory."
+    if cv_evidence.get("training_verified") and effective_level > g.current_level:
+        return (
+            f"Training completed — effective level {effective_level} (inventory {g.current_level}) "
+            f"vs required {g.required_level}; gap closing with verified learning."
+        )
     if not cv_evidence.get("in_cv"):
         return "Gap not substantiated in résumé text — prioritize training or update CV."
     if cv_evidence.get("in_experience_section"):
@@ -92,15 +100,16 @@ def build_employee_skill_gap_visualization(db: Session, user: User, profile: Emp
 
     sources = _skill_source_map(db, user.id)
     competency = build_employee_cv_competency(db, user, profile)
+    training_verified = training_verified_skill_levels(profile)
     enriched_gaps = []
     for g in gap_items:
-        eff, _ = effective_skill_level(
+        eff, cv_ev = effective_skill_level(
             current.get(g.skill, 0),
             source=sources.get(g.skill),
             competency=competency,
             skill=g.skill,
+            training_verified_level=training_verified.get(g.skill),
         )
-        cv_ev = skill_cv_evidence(competency, g.skill)
         enriched_gaps.append(
             _enrich_gap_row(
                 g,
@@ -154,7 +163,7 @@ def build_employee_skill_gap_visualization(db: Session, user: User, profile: Emp
             "profile_source": "hr_employee_record",
             "required_profile_rule": "primary_skill + job_title + department stack (canonical)",
         },
-        "cv_competency": competency_summary_dict(competency),
+        "cv_competency": competency_summary_for_employee(db, user, profile, competency),
         "required_profile": required,
         "current_profile": current,
         "importance_weights": importance_weights,
@@ -174,7 +183,9 @@ def build_employee_skill_gap_visualization(db: Session, user: User, profile: Emp
             "gaps_with_cv_evidence": len(cv_evidence_gaps),
             "gaps_in_experience_section": len(experience_gaps),
             "competency_quality_tier": competency.quality_tier,
-            "competency_quality_score": competency.quality_score,
+            "competency_quality_score": competency_summary_for_employee(db, user, profile, competency).get(
+                "quality_score", competency.quality_score
+            ),
         },
         "chart": chart_rows,
         "gaps": enriched_gaps,
