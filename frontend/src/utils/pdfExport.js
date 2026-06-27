@@ -1,5 +1,14 @@
 import html2canvas from "html2canvas";
 import jsPDF from "jspdf";
+import { drawBrandLogoPdf } from "./brandLogoPdf.js";
+
+const PURPLE = [123, 104, 174];
+const MUTED = [108, 117, 125];
+const FIELD_BORDER = [222, 226, 230];
+
+function formatReportDate(d = new Date()) {
+  return new Date(d).toLocaleDateString("en-US", { month: "2-digit", day: "2-digit", year: "numeric" });
+}
 
 export async function exportElementToPdf(
   element,
@@ -8,10 +17,10 @@ export async function exportElementToPdf(
 ) {
   if (!element) return;
   const {
-    title = "AI-CSGTS Dashboard Report",
+    title = "Workforce Status Report",
     role = "user",
     section = "overview",
-    logoText = "AI-CSGTS",
+    roleLabel = role,
     generatedAt = new Date()
   } = options;
 
@@ -25,55 +34,58 @@ export async function exportElementToPdf(
   const pdf = new jsPDF("p", "mm", "a4");
   const pageWidth = 210;
   const pageHeight = 297;
-  const headerH = 22;
+  const margin = 14;
+  const headerH = 28;
   const footerH = 10;
-  const imgWidth = pageWidth - 16;
+  const contentTop = headerH + 4;
+  const imgWidth = pageWidth - margin * 2;
   const imgHeight = (canvas.height * imgWidth) / canvas.width;
 
   let heightLeft = imgHeight;
-  let position = headerH + 6;
+  let position = contentTop;
 
-  pdf.addImage(imgData, "PNG", 8, position, imgWidth, imgHeight);
-  heightLeft -= pageHeight - headerH - footerH - 8;
+  pdf.addImage(imgData, "PNG", margin, position, imgWidth, imgHeight);
+  heightLeft -= pageHeight - contentTop - footerH - 4;
 
   while (heightLeft > 0) {
-    position = heightLeft - imgHeight + headerH + 6;
+    position = heightLeft - imgHeight + contentTop;
     pdf.addPage();
-    pdf.addImage(imgData, "PNG", 8, position, imgWidth, imgHeight);
-    heightLeft -= pageHeight - headerH - footerH - 8;
+    pdf.addImage(imgData, "PNG", margin, position, imgWidth, imgHeight);
+    heightLeft -= pageHeight - contentTop - footerH - 4;
   }
 
   const totalPages = pdf.getNumberOfPages();
-  const metaText = `Role: ${role} | Section: ${section}`;
-  const dateText = `Generated: ${new Date(generatedAt).toLocaleString()}`;
+  const dateText = formatReportDate(generatedAt);
 
   for (let i = 1; i <= totalPages; i += 1) {
     pdf.setPage(i);
 
-    pdf.setFillColor(248, 250, 252);
-    pdf.rect(0, 0, pageWidth, headerH, "F");
-    pdf.setFillColor(25, 118, 210);
-    pdf.rect(0, 0, 3, headerH, "F");
-    pdf.setTextColor(25, 35, 55);
+    const barH = 18;
+    const logoSize = 11;
+    const barY = 6;
+    pdf.setFillColor(...PURPLE);
+    pdf.rect(margin, barY, pageWidth - margin * 2, barH, "F");
+    drawBrandLogoPdf(pdf, margin + 4, barY + (barH - logoSize) / 2, logoSize);
+    pdf.setTextColor(255, 255, 255);
     pdf.setFont("helvetica", "bold");
     pdf.setFontSize(9);
-    pdf.text(logoText, 8, 8);
-    pdf.setFontSize(11);
-    pdf.text(title, 8, 15);
-    pdf.setFont("helvetica", "normal");
-    pdf.setFontSize(8);
-    pdf.setTextColor(100, 116, 139);
-    pdf.text(metaText, pageWidth - 8, 8, { align: "right" });
-    pdf.text(dateText, pageWidth - 8, 15, { align: "right" });
-    pdf.setDrawColor(226, 232, 240);
-    pdf.line(8, headerH + 1, pageWidth - 8, headerH + 1);
+    pdf.text("AI-CSGTS", margin + 4 + logoSize + 3, barY + barH / 2 + 1);
+    pdf.setFontSize(14);
+    pdf.text(title, pageWidth / 2, barY + barH / 2 + 1.5, { align: "center" });
 
-    pdf.setFillColor(248, 250, 252);
-    pdf.rect(0, pageHeight - footerH, pageWidth, footerH, "F");
-    pdf.setTextColor(100, 116, 139);
-    pdf.setFontSize(8);
-    pdf.text("Confidential — AI-CSGTS Workforce Intelligence", 8, pageHeight - 4);
-    pdf.text(`Page ${i} of ${totalPages}`, pageWidth - 8, pageHeight - 4, { align: "right" });
+    pdf.setTextColor(...MUTED);
+    pdf.setFont("helvetica", "normal");
+    pdf.setFontSize(7.5);
+    pdf.text(`Section: ${section}`, margin, headerH - 2);
+    pdf.text(`${roleLabel} · ${dateText}`, pageWidth - margin, headerH - 2, { align: "right" });
+
+    pdf.setDrawColor(...FIELD_BORDER);
+    pdf.line(margin, pageHeight - footerH, pageWidth - margin, pageHeight - footerH);
+    drawBrandLogoPdf(pdf, margin, pageHeight - footerH + 0.5, 5.5);
+    pdf.setTextColor(...MUTED);
+    pdf.setFontSize(7.5);
+    pdf.text("AI-CSGTS · Confidential workforce intelligence", margin + 8.5, pageHeight - 4);
+    pdf.text(`Page ${i} of ${totalPages}`, pageWidth - margin, pageHeight - 4, { align: "right" });
   }
 
   pdf.save(filename);

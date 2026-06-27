@@ -26,7 +26,7 @@ class CreatePrivilegedUserRequest(BaseModel):
     full_name: str = Field(min_length=2, max_length=200)
     email: EmailStr
     temporary_password: str = Field(min_length=8, max_length=200)
-    role: str = Field(pattern="^(hr_admin|manager)$")
+    role: str = Field(pattern="^(hr_admin|manager|executive)$")
 
 
 class UpdateUserStatusRequest(BaseModel):

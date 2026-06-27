@@ -59,6 +59,14 @@ const SECTIONS = [
   { key: "health", label: "System health" }
 ];
 
+function SectionPanel({ children }) {
+  return (
+    <Card variant="outlined" sx={{ borderRadius: 3, borderColor: "divider", boxShadow: "0 8px 22px rgba(0,0,0,0.06)" }}>
+      <CardContent sx={{ p: { xs: 1.5, sm: 2, md: 2.5 } }}>{children}</CardContent>
+    </Card>
+  );
+}
+
 export default function AdminDashboard() {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down("md"));
@@ -66,7 +74,8 @@ export default function AdminDashboard() {
   const exportRef = useRef(null);
   const [searchParams, setSearchParams] = useSearchParams();
   const [activeSection, setActiveSection] = useState("users");
-  const [loading, setLoading] = useState(true);
+  const [initialLoading, setInitialLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
 
   const [pending, setPending] = useState([]);
@@ -142,8 +151,21 @@ export default function AdminDashboard() {
     return filteredUsers.slice(start, start + rowsPerPage);
   }, [filteredUsers, page, rowsPerPage]);
 
-  async function load() {
-    setLoading(true);
+  function patchCreateForm(field) {
+    return (e) => setForm((prev) => ({ ...prev, [field]: e.target.value }));
+  }
+
+  function patchEditForm(field) {
+    return (e) => setEditForm((prev) => ({ ...prev, [field]: e.target.value }));
+  }
+
+  async function load(options = {}) {
+    const silent = Boolean(options.silent);
+    if (silent) {
+      setRefreshing(true);
+    } else {
+      setInitialLoading(true);
+    }
     try {
       setError("");
       const pRes = await api.get("/admin/users/pending");
@@ -163,7 +185,8 @@ export default function AdminDashboard() {
     } catch (err) {
       setError(getApiErrorMessage(err, "Failed to load admin dashboard"));
     } finally {
-      setLoading(false);
+      setInitialLoading(false);
+      setRefreshing(false);
     }
   }
 
@@ -188,7 +211,7 @@ export default function AdminDashboard() {
     try {
       await api.post(`/admin/users/${userId}/approve`);
       setSuccess("Employee approved successfully.");
-      await load();
+      await load({ silent: true });
     } catch (err) {
       setError(getApiErrorMessage(err, "Approval failed"));
     }
@@ -197,12 +220,22 @@ export default function AdminDashboard() {
   async function createPrivileged(e) {
     e.preventDefault();
     setError("");
+    const payload = {
+      full_name: form.full_name.trim(),
+      email: form.email.trim().toLowerCase(),
+      temporary_password: form.temporary_password,
+      role: form.role
+    };
+    if (!payload.full_name || !payload.email || !payload.temporary_password) {
+      setError("Full name, email, and temporary password are required.");
+      return;
+    }
     setCreating(true);
     try {
-      await api.post("/admin/users/create-privileged", form);
+      await api.post("/admin/users/create-privileged", payload);
       setForm({ full_name: "", email: "", temporary_password: "", role: "hr_admin" });
       setSuccess("Privileged user created.");
-      await load();
+      await load({ silent: true });
     } catch (err) {
       setError(getApiErrorMessage(err, "Failed to create user"));
     } finally {
@@ -388,7 +421,7 @@ export default function AdminDashboard() {
       setSuccess("User updated.");
       setEditOpen(false);
       setEditUser(null);
-      await load();
+      await load({ silent: true });
     } catch (err) {
       setError(getApiErrorMessage(err, "Failed to update user"));
     }
@@ -404,7 +437,7 @@ export default function AdminDashboard() {
       await api.delete(`/admin/users/${user.id}`);
       setSuccess(`Deleted ${user.email}.`);
       closeRowMenu();
-      await load();
+      await load({ silent: true });
     } catch (err) {
       setError(getApiErrorMessage(err, "Failed to delete user"));
     }
@@ -417,7 +450,7 @@ export default function AdminDashboard() {
       await api.post(endpoint, { name: name.trim(), active: true });
       clearFn("");
       setSuccess("Catalog updated.");
-      await load();
+      await load({ silent: true });
     } catch (err) {
       setError(getApiErrorMessage(err, "Failed to update catalog"));
     }
@@ -428,7 +461,7 @@ export default function AdminDashboard() {
     try {
       await api.post(`/master-data/requests/${requestId}/review`, { status: statusValue });
       setSuccess(`Request ${statusValue}.`);
-      await load();
+      await load({ silent: true });
     } catch (err) {
       setError(getApiErrorMessage(err, "Failed to review request"));
     }
@@ -448,24 +481,16 @@ export default function AdminDashboard() {
           ? ` Row errors: ${errors.slice(0, 5).map((e) => `row ${e.row}: ${e.detail}`).join("; ")}${errors.length > 5 ? "…" : ""}`
           : "";
       setSuccess(`${message || "Import complete."}${errText}`);
-      await load();
+      await load({ silent: true });
     } catch (err) {
       setError(getApiErrorMessage(err, "Failed to import users"));
     }
   }
 
-  function SectionPanel({ children }) {
-    return (
-      <Card variant="outlined" sx={{ borderRadius: 3, borderColor: "divider", boxShadow: "0 8px 22px rgba(0,0,0,0.06)" }}>
-        <CardContent sx={{ p: { xs: 1.5, sm: 2, md: 2.5 } }}>{children}</CardContent>
-      </Card>
-    );
-  }
-
   return (
     <AppShell title="Admin Dashboard">
       <Stack spacing={2}>
-        {loading ? <LinearProgress /> : null}
+        {refreshing ? <LinearProgress /> : null}
         {error ? <Alert severity="error">{error}</Alert> : null}
 
         <Card
@@ -490,7 +515,7 @@ export default function AdminDashboard() {
                 </Typography>
               </Box>
               <Stack direction={{ xs: "column", sm: "row" }} spacing={1} width={{ xs: "100%", md: "auto" }}>
-                <Button variant="outlined" onClick={load} startIcon={<RefreshIcon />} fullWidth={isMobile}>
+                <Button variant="outlined" onClick={() => load({ silent: true })} startIcon={<RefreshIcon />} fullWidth={isMobile}>
                   Refresh data
                 </Button>
                 <Button
@@ -555,7 +580,7 @@ export default function AdminDashboard() {
           <Grid item xs={12}>
             <Stack direction="row" justifyContent="space-between" sx={{ mb: 1 }}>
               <Tooltip title="Refresh all data">
-                <IconButton size="small" onClick={load}>
+                <IconButton size="small" onClick={() => load({ silent: true })}>
                   <RefreshIcon fontSize="small" />
                 </IconButton>
               </Tooltip>
@@ -573,7 +598,7 @@ export default function AdminDashboard() {
               </Button>
             </Stack>
             <div ref={exportRef}>
-            {loading ? (
+            {initialLoading ? (
               <SectionPanel>
                 <Stack direction="row" spacing={2} alignItems="center">
                   <CircularProgress size={22} />
@@ -582,7 +607,7 @@ export default function AdminDashboard() {
               </SectionPanel>
             ) : null}
 
-            {!loading && activeSection === "users" ? (
+            {!initialLoading && activeSection === "users" ? (
               <Stack spacing={2}>
                 <SectionPanel>
                   <Typography variant="h6" fontWeight={800}>
@@ -592,24 +617,27 @@ export default function AdminDashboard() {
                     You can create only `HR Admin`, `Manager`, and `Executive` accounts.
                   </Typography>
                   <Divider sx={{ my: 2 }} />
-                  <Stack component="form" spacing={2} onSubmit={createPrivileged}>
+                  <Stack component="form" spacing={2} onSubmit={createPrivileged} autoComplete="off">
                     <Grid container spacing={2}>
                       <Grid item xs={12} md={6}>
                         <TextField
                           label="Full name"
                           value={form.full_name}
-                          onChange={(e) => setForm({ ...form, full_name: e.target.value })}
+                          onChange={patchCreateForm("full_name")}
                           fullWidth
                           required
+                          autoComplete="name"
                         />
                       </Grid>
                       <Grid item xs={12} md={6}>
                         <TextField
                           label="Email"
+                          type="email"
                           value={form.email}
-                          onChange={(e) => setForm({ ...form, email: e.target.value })}
+                          onChange={patchCreateForm("email")}
                           fullWidth
                           required
+                          autoComplete="off"
                         />
                       </Grid>
                       <Grid item xs={12} md={6}>
@@ -617,23 +645,25 @@ export default function AdminDashboard() {
                           label="Temporary password"
                           type="password"
                           value={form.temporary_password}
-                          onChange={(e) => setForm({ ...form, temporary_password: e.target.value })}
+                          onChange={patchCreateForm("temporary_password")}
                           fullWidth
                           required
+                          autoComplete="new-password"
+                          helperText="Minimum 8 characters"
                         />
                       </Grid>
                       <Grid item xs={12} md={6}>
                         <TextField
                           label="Role"
                           value={form.role}
-                          onChange={(e) => setForm({ ...form, role: e.target.value })}
+                          onChange={patchCreateForm("role")}
                           fullWidth
                           required
                           select
-                          SelectProps={{ native: true }}
                         >
-                          <option value="hr_admin">HR Admin</option>
-                          <option value="manager">Manager</option>
+                          <MenuItem value="hr_admin">HR Admin</MenuItem>
+                          <MenuItem value="manager">Manager</MenuItem>
+                          <MenuItem value="executive">Executive</MenuItem>
                         </TextField>
                       </Grid>
                     </Grid>
@@ -1074,7 +1104,7 @@ export default function AdminDashboard() {
               </Stack>
             ) : null}
 
-            {!loading && activeSection === "permissions" ? (
+            {!initialLoading && activeSection === "permissions" ? (
               <SectionPanel>
                 <Stack direction={{ xs: "column", sm: "row" }} justifyContent="space-between" spacing={1}>
                   <Box>
@@ -1129,7 +1159,7 @@ export default function AdminDashboard() {
               </SectionPanel>
             ) : null}
 
-            {!loading && activeSection === "masterdata" ? (
+            {!initialLoading && activeSection === "masterdata" ? (
               <SectionPanel>
                 <Typography variant="h6" fontWeight={800}>
                   Master data administration
@@ -1198,7 +1228,7 @@ export default function AdminDashboard() {
               </SectionPanel>
             ) : null}
 
-            {!loading && activeSection === "audit" ? (
+            {!initialLoading && activeSection === "audit" ? (
               <SectionPanel>
                 <Typography variant="h6" fontWeight={800}>
                   Audit logs & activity tracking
@@ -1252,7 +1282,7 @@ export default function AdminDashboard() {
               </SectionPanel>
             ) : null}
 
-            {!loading && activeSection === "data" ? (
+            {!initialLoading && activeSection === "data" ? (
               <SectionPanel>
                 <Typography variant="h6" fontWeight={800}>
                   Data import / export tools
@@ -1286,7 +1316,7 @@ export default function AdminDashboard() {
               </SectionPanel>
             ) : null}
 
-            {!loading && activeSection === "health" ? (
+            {!initialLoading && activeSection === "health" ? (
               <SectionPanel>
                 <Typography variant="h6" fontWeight={800}>
                   System health monitoring
@@ -1314,57 +1344,57 @@ export default function AdminDashboard() {
             <TextField
               label="Full name"
               value={editForm.full_name || ""}
-              onChange={(e) => setEditForm({ ...editForm, full_name: e.target.value })}
+              onChange={patchEditForm("full_name")}
               fullWidth
             />
             <TextField
               label="Email"
               type="email"
               value={editForm.email || ""}
-              onChange={(e) => setEditForm({ ...editForm, email: e.target.value })}
+              onChange={patchEditForm("email")}
               fullWidth
             />
             <TextField
               label="Phone"
               value={editForm.phone_number || ""}
-              onChange={(e) => setEditForm({ ...editForm, phone_number: e.target.value })}
+              onChange={patchEditForm("phone_number")}
               fullWidth
             />
             <TextField
               label="Country"
               value={editForm.country || ""}
-              onChange={(e) => setEditForm({ ...editForm, country: e.target.value })}
+              onChange={patchEditForm("country")}
               fullWidth
             />
             <TextField
               label="Department"
               value={editForm.department || ""}
-              onChange={(e) => setEditForm({ ...editForm, department: e.target.value })}
+              onChange={patchEditForm("department")}
               fullWidth
             />
             <TextField
               label="Job title"
               value={editForm.job_title || ""}
-              onChange={(e) => setEditForm({ ...editForm, job_title: e.target.value })}
+              onChange={patchEditForm("job_title")}
               fullWidth
             />
             <TextField
               label="Experience level"
               value={editForm.experience_level || ""}
-              onChange={(e) => setEditForm({ ...editForm, experience_level: e.target.value })}
+              onChange={patchEditForm("experience_level")}
               fullWidth
             />
             <TextField
               label="Primary skill"
               value={editForm.primary_skill || ""}
-              onChange={(e) => setEditForm({ ...editForm, primary_skill: e.target.value })}
+              onChange={patchEditForm("primary_skill")}
               fullWidth
             />
             {editUser?.role === "employee" ? (
               <TextField
                 label="Manager user ID (UUID)"
                 value={editForm.manager_id || ""}
-                onChange={(e) => setEditForm({ ...editForm, manager_id: e.target.value })}
+                onChange={patchEditForm("manager_id")}
                 fullWidth
                 helperText="Leave empty to clear manager assignment"
               />
@@ -1374,28 +1404,26 @@ export default function AdminDashboard() {
                 <TextField
                   label="Role"
                   value={editForm.role || "employee"}
-                  onChange={(e) => setEditForm({ ...editForm, role: e.target.value })}
+                  onChange={patchEditForm("role")}
                   fullWidth
                   select
-                  SelectProps={{ native: true }}
                 >
-                  <option value="employee">employee</option>
-                  <option value="manager">manager</option>
-                  <option value="hr_admin">hr_admin</option>
-                  <option value="executive">executive</option>
+                  <MenuItem value="employee">Employee</MenuItem>
+                  <MenuItem value="manager">Manager</MenuItem>
+                  <MenuItem value="hr_admin">HR Admin</MenuItem>
+                  <MenuItem value="executive">Executive</MenuItem>
                 </TextField>
                 {!isProtectedAdmin(editUser) ? (
                   <TextField
                     label="Status"
                     value={editForm.status || "active"}
-                    onChange={(e) => setEditForm({ ...editForm, status: e.target.value })}
+                    onChange={patchEditForm("status")}
                     fullWidth
                     select
-                    SelectProps={{ native: true }}
                   >
-                    <option value="active">active</option>
-                    <option value="disabled">disabled</option>
-                    <option value="pending_approval">pending_approval</option>
+                    <MenuItem value="active">Active</MenuItem>
+                    <MenuItem value="disabled">Disabled</MenuItem>
+                    <MenuItem value="pending_approval">Pending approval</MenuItem>
                   </TextField>
                 ) : null}
               </>

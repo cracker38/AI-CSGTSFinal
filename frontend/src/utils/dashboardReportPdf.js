@@ -21,21 +21,29 @@ function topGapRows(gaps, limit = 6) {
 
 function buildEmployeeMainBrief(r, data) {
   const { kpis = [], profile, intel, gaps, recommendations = [], trainingProgress = {}, projects = [] } = data;
-  r.section("Executive brief", "Professional summary — key metrics and priorities only");
-  r.kpis(kpis.slice(0, 4), 4);
-  r.keyValueRows([
-    ["Employee", profile?.basic?.name],
-    ["Department", profile?.basic?.department],
-    ["Job title", profile?.basic?.job_title],
-    ["Target role", intel?.positions?.target_job_title || profile?.career_preferences?.target_job_title],
-    ["Primary skill", profile?.basic?.primary_skill],
-    ["Role alignment", intel?.alignment_score_target_role != null ? fmtPct(intel.alignment_score_target_role) : "—"],
-    ["CV quality", intel?.cv_competency?.quality_score != null ? `${intel.cv_competency.quality_score}%` : "—"]
+  r.section("Report status summary", "Completed work and key highlights for this reporting period");
+  r.numberedList([
+    `Profile reviewed for ${profile?.basic?.name || "employee"}`,
+    intel?.alignment_score_target_role != null
+      ? `Role alignment score: ${fmtPct(intel.alignment_score_target_role)}`
+      : "Role alignment assessed from CV and competency data",
+    `${(trainingProgress.active_courses || []).length} active training course(s) in progress`,
+    `${projects.length} open project assignment(s) tracked`
+  ]);
+  r.section("Report health");
+  r.healthPanel(
+    kpis.slice(0, 4).map((k) => ({ title: k.label, body: fmt(k.value) }))
+  );
+  r.reportInfo([
+    { label: "Employee", value: profile?.basic?.name },
+    { label: "Department", value: profile?.basic?.department },
+    { label: "Job title", value: profile?.basic?.job_title },
+    { label: "Target role", value: intel?.positions?.target_job_title || profile?.career_preferences?.target_job_title }
   ]);
   const bullets = (intel?.narrative?.bullets || profile?.cv_intel?.analysis_bullets || []).slice(0, 5);
   if (bullets.length) {
     r.section("Key insights");
-    r.bullets(bullets);
+    r.numberedList(bullets);
   }
   const priorityGaps = topGapRows(gaps?.gaps, 6);
   if (priorityGaps.length) {
@@ -98,16 +106,24 @@ function buildManagerTeamDirectoryReport(r, data) {
   const available = team.filter((m) => m.availability === "available").length;
   const overloaded = team.filter((m) => m.availability === "overloaded").length;
 
-  r.section("Team overview", "Official register of employees assigned to your management unit");
-  r.kpis(
-    [
-      { label: "Team members", value: team.length },
-      { label: "Available", value: available },
-      { label: "Overloaded", value: overloaded },
-      { label: "Active projects", value: overview?.kpis?.active_projects ?? kpis.find((k) => k.label?.includes("project"))?.value ?? "—" }
-    ],
-    4
-  );
+  r.section("Report status summary", "Team directory snapshot for this reporting period");
+  r.numberedList([
+    `${team.length} direct report(s) on record`,
+    `${available} available · ${overloaded} overloaded`,
+    `${deptRows.length} department(s) represented on the team`,
+    "Complete roster and department breakdown included below"
+  ]);
+
+  r.section("Report health");
+  r.healthPanel([
+    { title: "Team members", body: fmt(team.length) },
+    { title: "Available", body: fmt(available) },
+    { title: "Overloaded", body: fmt(overloaded) },
+    {
+      title: "Active projects",
+      body: fmt(overview?.kpis?.active_projects ?? kpis.find((k) => k.label?.includes("project"))?.value ?? "—")
+    }
+  ]);
 
   r.section("Headcount by department");
   r.table(
@@ -150,25 +166,21 @@ function buildManagerTeamPerformanceReport(r, data) {
   }).length;
   const focus = rows.filter((row) => Number(row.performance_score || 0) < 45).length;
 
-  r.section("Team performance summary", "Composite scores from project delivery, skill targets, and training progress");
-  r.kpis(
-    [
-      { label: "Team members scored", value: rows.length },
-      { label: "Avg performance", value: avg("performance_score") },
-      { label: "Avg task completion", value: `${avg("task_completion_rate")}%` },
-      { label: "Avg skill improvement", value: `${avg("skill_improvement")}%` }
-    ],
-    4
-  );
-  r.kpis(
-    [
-      { label: "Strong (≥70)", value: high },
-      { label: "Developing (45–69)", value: developing },
-      { label: "Focus required (<45)", value: focus },
-      { label: "Avg training completion", value: `${avg("training_completion_pct")}%` }
-    ],
-    4
-  );
+  r.section("Report status summary", "Team performance highlights for this reporting period");
+  r.numberedList([
+    `${rows.length} team member(s) scored`,
+    `Average performance: ${avg("performance_score")}`,
+    `${high} strong (≥70) · ${developing} developing (45–69) · ${focus} need focus (<45)`,
+    "Full performance register sorted by score included below"
+  ]);
+
+  r.section("Report health");
+  r.healthPanel([
+    { title: "Avg performance", body: fmt(avg("performance_score")) },
+    { title: "Avg task completion", body: `${avg("task_completion_rate")}%` },
+    { title: "Strong (≥70)", body: fmt(high) },
+    { title: "Focus required (<45)", body: fmt(focus) }
+  ]);
 
   r.section("Team performance register", "Sorted by composite performance score (highest first)");
   r.table(
@@ -228,16 +240,21 @@ function buildManagerTeamTrainingReport(r, data) {
     }, {})
   ).sort((a, b) => String(a.employee_name || "").localeCompare(String(b.employee_name || "")));
 
-  r.section("Team training operations", "Direct reports currently enrolled in HR learning programs");
-  r.kpis(
-    [
-      { label: "Active assignments", value: teamTraining.length },
-      { label: "Team members in training", value: employeeIds.size },
-      { label: "Learning now (in session)", value: inSession },
-      { label: "Pending HR approval", value: pending }
-    ],
-    4
-  );
+  r.section("Report status summary", "Team training operations for this reporting period");
+  r.numberedList([
+    `${teamTraining.length} active course assignment(s)`,
+    `${employeeIds.size} team member(s) enrolled in training`,
+    `${inSession} learning session(s) in progress now`,
+    `${pending} assignment(s) pending HR approval`
+  ]);
+
+  r.section("Report health");
+  r.healthPanel([
+    { title: "Active assignments", body: fmt(teamTraining.length) },
+    { title: "Members in training", body: fmt(employeeIds.size) },
+    { title: "In session now", body: fmt(inSession) },
+    { title: "Pending HR approval", body: fmt(pending) }
+  ]);
 
   r.section("Team members in training", `${employeeIds.size} employee(s) with open programs`);
   r.table(
@@ -287,16 +304,21 @@ function buildHrEmployeeDirectoryReport(r, data) {
     .map(([department, count]) => ({ department, count }))
     .sort((a, b) => b.count - a.count);
 
-  r.section("Workforce overview", "Official register of all employee accounts in the organization");
-  r.kpis(
-    [
-      { label: "Total employees", value: employees.length },
-      { label: "Active accounts", value: employees.filter((e) => e.status === "active").length },
-      { label: "Pending approval", value: pending.length },
-      { label: "Departments", value: deptRows.length }
-    ],
-    4
-  );
+  r.section("Report status summary", "Organization workforce snapshot for this reporting period");
+  r.numberedList([
+    `${employees.length} employee account(s) on record`,
+    `${employees.filter((e) => e.status === "active").length} active · ${pending.length} pending approval`,
+    `${deptRows.length} department(s) with assigned staff`,
+    "Complete directory and department breakdown included below"
+  ]);
+
+  r.section("Report health");
+  r.healthPanel([
+    { title: "Total employees", body: fmt(employees.length) },
+    { title: "Active accounts", body: fmt(employees.filter((e) => e.status === "active").length) },
+    { title: "Pending approval", body: fmt(pending.length) },
+    { title: "Departments", body: fmt(deptRows.length) }
+  ]);
 
   r.section("Headcount by department");
   r.table(
@@ -354,25 +376,21 @@ function buildHrEmployeePerformanceReport(r, data) {
   }).length;
   const focus = rows.filter((row) => Number(row.performance_score || 0) < 45).length;
 
-  r.section("Performance summary", "Composite scores from project delivery, skill targets, and training progress");
-  r.kpis(
-    [
-      { label: "Employees scored", value: rows.length },
-      { label: "Avg performance", value: avg("performance_score") },
-      { label: "Avg skill improvement", value: `${avg("skill_improvement")}%` },
-      { label: "Avg training completion", value: `${avg("training_completion")}%` }
-    ],
-    4
-  );
-  r.kpis(
-    [
-      { label: "Strong (≥70)", value: high },
-      { label: "Developing (45–69)", value: developing },
-      { label: "Focus required (<45)", value: focus },
-      { label: "Avg project success", value: `${avg("project_success")}%` }
-    ],
-    4
-  );
+  r.section("Report status summary", "Organization performance highlights for this reporting period");
+  r.numberedList([
+    `${rows.length} employee(s) with performance scores`,
+    `Average performance: ${avg("performance_score")}`,
+    `${high} strong (≥70) · ${developing} developing (45–69) · ${focus} need focus (<45)`,
+    "Full performance register sorted by score included below"
+  ]);
+
+  r.section("Report health");
+  r.healthPanel([
+    { title: "Avg performance", body: fmt(avg("performance_score")) },
+    { title: "Avg skill improvement", body: `${avg("skill_improvement")}%` },
+    { title: "Strong (≥70)", body: fmt(high) },
+    { title: "Focus required (<45)", body: fmt(focus) }
+  ]);
 
   r.section("Employee performance register", "Sorted by composite performance score (highest first)");
   r.table(
@@ -431,25 +449,24 @@ function buildHrTrainingActiveReport(r, data) {
     }, {})
   ).sort((a, b) => String(a.employee_name || "").localeCompare(String(b.employee_name || "")));
 
-  r.section("Training operations", "Employees currently enrolled in HR-assigned learning programs");
-  r.kpis(
-    [
-      { label: "Active assignments", value: hrOpenTrainings.length },
-      { label: "Employees in training", value: employeeIds.size },
-      { label: "Learning now (in session)", value: inSession },
-      { label: "Pending enrollments", value: hrPendingEnrollments.length }
-    ],
-    4
-  );
-  r.kpis(
-    [
-      { label: "Org completion rate", value: fmtPct(trainingPlan.training_completion_rate_pct) },
-      { label: "Completed (org)", value: trainingPlan.assignment_stats?.completed ?? "—" },
-      { label: "Active (org)", value: trainingPlan.assignment_stats?.active ?? hrOpenTrainings.length },
-      { label: "Budget committed", value: trainingPlan.budget?.committed_spend != null ? `$${trainingPlan.budget.committed_spend}` : "—" }
-    ],
-    4
-  );
+  r.section("Report status summary", "Organization training operations for this reporting period");
+  r.numberedList([
+    `${hrOpenTrainings.length} active course assignment(s)`,
+    `${employeeIds.size} employee(s) currently in training`,
+    `${inSession} learning session(s) in progress`,
+    `${hrPendingEnrollments.length} enrollment request(s) awaiting HR approval`
+  ]);
+
+  r.section("Report health");
+  r.healthPanel([
+    { title: "Active assignments", body: fmt(hrOpenTrainings.length) },
+    { title: "Employees in training", body: fmt(employeeIds.size) },
+    { title: "Org completion rate", body: fmtPct(trainingPlan.training_completion_rate_pct) },
+    {
+      title: "Budget committed",
+      body: trainingPlan.budget?.committed_spend != null ? `$${trainingPlan.budget.committed_spend}` : "—"
+    }
+  ]);
 
   r.section("Employees in training", `${employeeIds.size} employee(s) with open assignments`);
   r.table(
@@ -501,10 +518,44 @@ function round(n, d = 1) {
   return Math.round(Number(n) * f) / f;
 }
 
+function formatReportDate(d = new Date()) {
+  return new Date(d).toLocaleDateString("en-US", { month: "2-digit", day: "2-digit", year: "numeric" });
+}
+
+function reportMeta(r, data) {
+  return {
+    ...data,
+    roleLabel: data.roleLabel || r.options.roleLabel,
+    sectionLabel: data.sectionLabel || r.options.sectionLabel,
+    reportTitle: data.reportTitle || r.options.title,
+    generatedAt: data.generatedAt || r.options.generatedAt,
+    managerName: data.managerName || data.userName,
+    signOffTitle: data.signOffTitle
+  };
+}
+
+function beginWorkforceReport(r, data) {
+  r.coverBlock();
+  r.reportInfo([
+    { label: "Organization", value: "AI-CSGTS Workforce Intelligence" },
+    { label: "Report owner", value: data.managerName || data.roleLabel || "Authorized user" },
+    { label: "Report type", value: data.sectionLabel || data.reportTitle || "Workforce report" },
+    { label: "Reporting date", value: formatReportDate(data.generatedAt || new Date()) }
+  ]);
+}
+
+function finishWorkforceReport(r, data) {
+  r.signOff({
+    reportingPerson: data.managerName || data.roleLabel || "Authorized user",
+    jobTitle: data.signOffTitle || data.roleLabel || "Workforce intelligence export",
+    date: formatReportDate()
+  });
+}
+
 function mainReportFooter(r) {
   r.spacer(2);
   r.paragraph(
-    "This is an executive brief with selected highlights only. Download the division reports (Executive, Training, Talent, etc.) from the Report section for complete tables and audit detail."
+    "This is an executive brief with selected highlights only. Download division reports from the Report section for complete tables and audit detail."
   );
 }
 
@@ -512,19 +563,21 @@ const PAGE_W = 210;
 const PAGE_H = 297;
 const MARGIN = 14;
 const CONTENT_W = PAGE_W - MARGIN * 2;
-const FOOTER_H = 12;
-const HEADER_H = 22;
+const FOOTER_H = 10;
+const HEADER_H = 0;
 
+/** Project Status Report template palette */
 const C = {
-  primary: [25, 118, 210],
-  secondary: [46, 125, 50],
-  dark: [25, 35, 55],
-  muted: [100, 116, 139],
-  light: [248, 250, 252],
-  border: [226, 232, 240],
+  purple: [123, 104, 174],
+  purpleDark: [98, 82, 145],
+  dark: [33, 37, 41],
+  muted: [108, 117, 125],
+  fieldBg: [245, 245, 247],
+  fieldBorder: [222, 226, 230],
+  light: [250, 250, 252],
+  border: [230, 232, 236],
   white: [255, 255, 255],
-  warn: [237, 108, 2],
-  danger: [211, 47, 47]
+  rowAlt: [248, 249, 251]
 };
 
 function fmt(v) {
@@ -549,7 +602,7 @@ class ReportBuilder {
     this.pdf = new jsPDF("p", "mm", "a4");
     this.options = {
       logoText: "AI-CSGTS",
-      title: "Workforce Intelligence Report",
+      title: "Workforce Status Report",
       subtitle: "",
       role: "user",
       roleLabel: "Dashboard",
@@ -559,54 +612,38 @@ class ReportBuilder {
       confidential: true,
       ...options
     };
-    this.y = MARGIN + HEADER_H;
+    this.y = MARGIN;
     this.page = 1;
-    this._drawPageChrome();
+    this._drawPageFooter();
   }
 
   _setColor(rgb, type = "text") {
     this.pdf[`set${type === "fill" ? "Fill" : "Text"}Color`](...rgb);
   }
 
-  _drawPageChrome() {
-    const { logoText, title, roleLabel, sectionLabel, generatedAt } = this.options;
+  _drawPageFooter() {
     const p = this.pdf;
-
-    p.setFillColor(...C.light);
-    p.rect(0, 0, PAGE_W, HEADER_H, "F");
-    p.setFillColor(...C.primary);
-    p.rect(0, 0, 3, HEADER_H, "F");
-    drawBrandLogoPdf(p, MARGIN, 3.5, 9);
-
-    this._setColor(C.dark);
-    p.setFont("helvetica", "bold");
-    p.setFontSize(8);
-    p.text(logoText, MARGIN + 11, 7);
-    p.setFontSize(11);
-    p.text(title, MARGIN + 11, 14);
-
+    const { logoText } = this.options;
+    const logoSize = 5.5;
+    drawBrandLogoPdf(p, MARGIN, PAGE_H - FOOTER_H + 0.5, logoSize);
+    p.setDrawColor(...C.fieldBorder);
+    p.line(MARGIN, PAGE_H - FOOTER_H, PAGE_W - MARGIN, PAGE_H - FOOTER_H);
     this._setColor(C.muted);
     p.setFont("helvetica", "normal");
-    p.setFontSize(8);
-    p.text(`${roleLabel} · ${sectionLabel}`, PAGE_W - MARGIN, 8, { align: "right" });
-    p.text(new Date(generatedAt).toLocaleString(), PAGE_W - MARGIN, 14, { align: "right" });
-
-    p.setDrawColor(...C.border);
-    p.line(MARGIN, HEADER_H + 1, PAGE_W - MARGIN, HEADER_H + 1);
-
-    p.setFillColor(...C.light);
-    p.rect(0, PAGE_H - FOOTER_H, PAGE_W, FOOTER_H, "F");
-    this._setColor(C.muted);
     p.setFontSize(7.5);
-    p.text("Confidential — AI-CSGTS Workforce Intelligence", MARGIN, PAGE_H - 5);
-    p.text(`Page ${this.page}`, PAGE_W - MARGIN, PAGE_H - 5, { align: "right" });
+    p.text(
+      `${logoText || "AI-CSGTS"} · Confidential workforce intelligence`,
+      MARGIN + logoSize + 3,
+      PAGE_H - 4
+    );
+    p.text(`Page ${this.page}`, PAGE_W - MARGIN, PAGE_H - 4, { align: "right" });
   }
 
   _newPage() {
     this.pdf.addPage();
     this.page += 1;
-    this.y = MARGIN + HEADER_H;
-    this._drawPageChrome();
+    this.y = MARGIN;
+    this._drawPageFooter();
   }
 
   ensureSpace(needed) {
@@ -615,41 +652,77 @@ class ReportBuilder {
     }
   }
 
+  /** Full-width purple title bar — matches Project Status Report template */
   coverBlock() {
-    const { title, subtitle, roleLabel, sectionLabel, generatedAt } = this.options;
-    this.y = MARGIN + HEADER_H + 6;
-
-    this.pdf.setFillColor(...C.primary);
-    this.pdf.roundedRect(MARGIN, this.y, CONTENT_W, 36, 3, 3, "F");
-    drawBrandLogoPdf(this.pdf, MARGIN + 6, this.y + 6, 14);
+    const { title, logoText } = this.options;
+    const barH = 18;
+    const logoSize = 12;
+    this.ensureSpace(barH + 8);
+    this.pdf.setFillColor(...C.purple);
+    this.pdf.rect(MARGIN, this.y, CONTENT_W, barH, "F");
+    drawBrandLogoPdf(this.pdf, MARGIN + 4, this.y + (barH - logoSize) / 2, logoSize);
     this._setColor(C.white);
     this.pdf.setFont("helvetica", "bold");
-    this.pdf.setFontSize(18);
-    this.pdf.text(title, MARGIN + 24, this.y + 14);
-    this.pdf.setFont("helvetica", "normal");
-    this.pdf.setFontSize(10);
-    const sub = safeLines(subtitle || `${roleLabel} comprehensive analytics export`, 90);
-    this.pdf.text(sub, MARGIN + 24, this.y + 22, { maxWidth: CONTENT_W - 30 });
-
     this.pdf.setFontSize(9);
-    this.pdf.text(`Section: ${sectionLabel}`, MARGIN + 24, this.y + 30);
-    this.pdf.text(`Generated ${new Date(generatedAt).toLocaleString()}`, PAGE_W - MARGIN - 8, this.y + 30, {
-      align: "right"
-    });
+    this.pdf.text(logoText || "AI-CSGTS", MARGIN + 4 + logoSize + 3, this.y + barH / 2 + 1);
+    this.pdf.setFontSize(14);
+    this.pdf.text(String(title), MARGIN + CONTENT_W / 2, this.y + barH / 2 + 1.5, { align: "center" });
+    this.y += barH + 8;
+    return this;
+  }
 
-    this.y += 44;
+  /** Grey label + value fields in two columns */
+  reportInfo(fields = []) {
+    return this._reportFields(fields, "Report information");
+  }
+
+  _reportFields(fields = [], title = null) {
+    if (title) this.sectionTitle(title);
+    const cols = 2;
+    const gap = 4;
+    const colW = (CONTENT_W - gap) / cols;
+    const boxH = 12;
+    const rowGap = 10;
+
+    for (let i = 0; i < fields.length; i += cols) {
+      this.ensureSpace(boxH + rowGap + 6);
+      const rowY = this.y;
+      for (let c = 0; c < cols; c++) {
+        const field = fields[i + c];
+        if (!field) continue;
+        const x = MARGIN + c * (colW + gap);
+        this._setColor(C.muted);
+        this.pdf.setFont("helvetica", "normal");
+        this.pdf.setFontSize(8);
+        this.pdf.text(String(field.label || ""), x, rowY);
+        const by = rowY + 4;
+        this.pdf.setDrawColor(...C.fieldBorder);
+        this.pdf.setFillColor(...C.fieldBg);
+        this.pdf.roundedRect(x, by, colW, boxH, 1.5, 1.5, "FD");
+        this._setColor(C.dark);
+        this.pdf.setFont("helvetica", "normal");
+        this.pdf.setFontSize(9);
+        const valLines = this.pdf.splitTextToSize(fmt(field.value), colW - 6);
+        this.pdf.text(valLines[0] || "—", x + 3, by + 7.5, { maxWidth: colW - 6 });
+      }
+      this.y = rowY + 4 + boxH + rowGap;
+    }
+    this.y += 2;
+    return this;
+  }
+
+  sectionTitle(title) {
+    this.ensureSpace(12);
+    this._setColor(C.dark);
+    this.pdf.setFont("helvetica", "bold");
+    this.pdf.setFontSize(11);
+    this.pdf.text(String(title), MARGIN, this.y + 4);
+    this.y += 10;
     return this;
   }
 
   section(title, subtitle = "") {
-    this.ensureSpace(16);
-    this.pdf.setFillColor(...C.primary);
-    this.pdf.rect(MARGIN, this.y, 2.5, 10, "F");
-    this._setColor(C.dark);
-    this.pdf.setFont("helvetica", "bold");
-    this.pdf.setFontSize(12);
-    this.pdf.text(String(title), MARGIN + 6, this.y + 7);
-    this.y += 12;
+    this.sectionTitle(title);
     if (subtitle) {
       this._setColor(C.muted);
       this.pdf.setFont("helvetica", "normal");
@@ -665,39 +738,80 @@ class ReportBuilder {
     return this;
   }
 
-  kpis(items = [], cols = 4) {
-    if (!items.length) return this;
-    const colW = CONTENT_W / cols;
-    const boxH = 22;
-    const rows = Math.ceil(items.length / cols);
-    this.ensureSpace(rows * (boxH + 4) + 4);
-
-    items.forEach((kpi, idx) => {
-      const col = idx % cols;
-      const row = Math.floor(idx / cols);
-      const x = MARGIN + col * colW + (col > 0 ? 2 : 0);
-      const y = this.y + row * (boxH + 4);
-      const w = colW - 3;
-
-      this.pdf.setDrawColor(...C.border);
-      this.pdf.setFillColor(...C.white);
-      this.pdf.roundedRect(x, y, w, boxH, 2, 2, "FD");
-      this.pdf.setFillColor(...(idx % 2 === 0 ? C.primary : C.secondary));
-      this.pdf.rect(x, y, w, 1.2, "F");
-
-      this._setColor(C.muted);
-      this.pdf.setFont("helvetica", "normal");
-      this.pdf.setFontSize(7.5);
-      this.pdf.text(String(kpi.label || ""), x + 4, y + 7, { maxWidth: w - 8 });
-
-      this._setColor(C.dark);
-      this.pdf.setFont("helvetica", "bold");
-      this.pdf.setFontSize(13);
-      this.pdf.text(fmt(kpi.value), x + 4, y + 16, { maxWidth: w - 8 });
+  numberedList(items = []) {
+    const list = (items || []).filter(Boolean);
+    if (!list.length) return this;
+    list.forEach((item, idx) => {
+      const lines = this.pdf.splitTextToSize(`${idx + 1}. ${safeLines(item, 400)}`, CONTENT_W - 4);
+      lines.forEach((ln) => {
+        this.ensureSpace(5);
+        this._setColor(C.dark);
+        this.pdf.setFont("helvetica", "normal");
+        this.pdf.setFontSize(9);
+        this.pdf.text(ln, MARGIN + 2, this.y);
+        this.y += 4.8;
+      });
     });
-
-    this.y += rows * (boxH + 4) + 4;
+    this.y += 3;
     return this;
+  }
+
+  /** 2-column health / insight blocks like template Project Health section */
+  healthPanel(blocks = []) {
+    const items = (blocks || []).filter((b) => b?.title);
+    if (!items.length) return this;
+    const cols = 2;
+    const gap = 4;
+    const colW = (CONTENT_W - gap) / cols;
+    const pad = 3;
+    const minH = 22;
+
+    for (let i = 0; i < items.length; i += cols) {
+      const rowItems = [items[i], items[i + 1]].filter(Boolean);
+      const bodies = rowItems.map((b) => this.pdf.splitTextToSize(safeLines(b.body, 500), colW - pad * 2));
+      const maxLines = Math.max(...bodies.map((l) => l.length), 2);
+      const boxH = Math.max(minH, 8 + maxLines * 4.2);
+      this.ensureSpace(boxH + 6);
+
+      rowItems.forEach((block, c) => {
+        const x = MARGIN + c * (colW + gap);
+        this.pdf.setDrawColor(...C.fieldBorder);
+        this.pdf.setFillColor(...C.white);
+        this.pdf.roundedRect(x, this.y, colW, boxH, 2, 2, "D");
+        this._setColor(C.dark);
+        this.pdf.setFont("helvetica", "bold");
+        this.pdf.setFontSize(8.5);
+        this.pdf.text(String(block.title), x + pad, this.y + 6);
+        this._setColor(C.muted);
+        this.pdf.setFont("helvetica", "normal");
+        this.pdf.setFontSize(8);
+        bodies[c].forEach((ln, li) => {
+          this.pdf.text(ln, x + pad, this.y + 11 + li * 4.2, { maxWidth: colW - pad * 2 });
+        });
+      });
+      this.y += boxH + 5;
+    }
+    return this;
+  }
+
+  signOff({ reportingPerson, jobTitle, date }) {
+    return this._reportFields(
+      [
+        { label: "Reporting person", value: reportingPerson },
+        { label: "Job title", value: jobTitle },
+        { label: "Report author signature", value: reportingPerson },
+        { label: "Reporting date", value: date || formatReportDate() }
+      ],
+      "Authorization"
+    );
+  }
+
+  kpis(items = [], cols = 4) {
+    const blocks = (items || []).map((k) => ({
+      title: k.label,
+      body: fmt(k.value)
+    }));
+    return this.healthPanel(blocks);
   }
 
   paragraph(text) {
@@ -762,7 +876,7 @@ class ReportBuilder {
     const rowH = 7;
     const drawHeader = () => {
       this.ensureSpace(headerH + 4);
-      this.pdf.setFillColor(...C.primary);
+      this.pdf.setFillColor(...C.purple);
       this.pdf.rect(MARGIN, this.y, CONTENT_W, headerH, "F");
       this._setColor(C.white);
       this.pdf.setFont("helvetica", "bold");
@@ -792,7 +906,7 @@ class ReportBuilder {
         drawHeader();
       }
       if (rIdx % 2 === 0) {
-        this.pdf.setFillColor(...C.light);
+        this.pdf.setFillColor(...C.rowAlt);
         this.pdf.rect(MARGIN, this.y, CONTENT_W, rowH, "F");
       }
       this._setColor(C.dark);
@@ -855,10 +969,13 @@ export function exportEmployeeDashboardReport(data, filename = "employee-workfor
     sectionLabel: sectionLabel || "Full dashboard"
   });
 
-  r.coverBlock();
+  const meta = reportMeta(r, { ...data, userName });
+  beginWorkforceReport(r, meta);
+
   if (isMainReport(reportType)) {
     buildEmployeeMainBrief(r, data);
     mainReportFooter(r);
+    finishWorkforceReport(r, meta);
     r.save(filename);
     return;
   }
@@ -1028,6 +1145,7 @@ export function exportEmployeeDashboardReport(data, filename = "employee-workfor
   }
   }
 
+  finishWorkforceReport(r, meta);
   r.save(filename);
 }
 
@@ -1043,7 +1161,8 @@ export function exportManagerDashboardReport(data, filename = "manager-workforce
     sectionLabel: data.sectionLabel || "Manager Report"
   });
 
-  r.coverBlock();
+  const meta = reportMeta(r, { ...data, signOffTitle: "Manager" });
+  beginWorkforceReport(r, meta);
 
   if (isDivisionReport(reportType, "team_directory")) {
     buildManagerTeamDirectoryReport(r, data);
@@ -1055,6 +1174,7 @@ export function exportManagerDashboardReport(data, filename = "manager-workforce
     buildManagerTeamDirectoryReport(r, data);
   }
 
+  finishWorkforceReport(r, meta);
   r.save(filename);
 }
 
@@ -1070,7 +1190,8 @@ export function exportHrDashboardReport(data, filename = "hr-workforce-report.pd
     sectionLabel: data.sectionLabel || "HR Report"
   });
 
-  r.coverBlock();
+  const meta = reportMeta(r, { ...data, signOffTitle: "HR Administrator" });
+  beginWorkforceReport(r, meta);
 
   if (isDivisionReport(reportType, "employee_directory")) {
     buildHrEmployeeDirectoryReport(r, data);
@@ -1082,5 +1203,6 @@ export function exportHrDashboardReport(data, filename = "hr-workforce-report.pd
     buildHrEmployeeDirectoryReport(r, data);
   }
 
+  finishWorkforceReport(r, meta);
   r.save(filename);
 }
