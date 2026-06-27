@@ -1621,6 +1621,7 @@ export default function HrDashboard() {
                               }
                               onMarkComplete={() =>
                                 hrUpdateTrainingAssignment(row.id, {
+                                  progress_pct: 100,
                                   mark_completed: true,
                                   certificate_status: "Issued"
                                 })
@@ -1705,6 +1706,7 @@ export default function HrDashboard() {
                                     color="success"
                                     onClick={() =>
                                       hrUpdateTrainingAssignment(row.id, {
+                                        progress_pct: 100,
                                         mark_completed: true,
                                         certificate_status: "Issued"
                                       })
@@ -2440,4 +2442,3 @@ export default function HrDashboard() {
     </AppShell>
   );
 }
-

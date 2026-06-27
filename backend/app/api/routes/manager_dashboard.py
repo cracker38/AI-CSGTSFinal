@@ -283,6 +283,8 @@ def create_project(
     db: Session = Depends(get_db),
     manager: User = Depends(require_roles(UserRole.manager)),
 ) -> dict:
+    if payload.deadline is not None and payload.deadline < date.today():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Project deadline cannot be in the past")
     if not payload.required_job_titles:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="At least one required job title is required")
     active_departments = _active_department_names(db)

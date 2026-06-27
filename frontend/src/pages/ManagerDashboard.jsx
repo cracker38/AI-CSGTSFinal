@@ -37,6 +37,12 @@ const PROJECT_SKILL_LEVELS = [1, 2, 3, 4, 5];
 const PROJECT_SKILL_WEIGHTS = [0.5, 1, 1.5, 2, 2.5, 3];
 const PROJECT_EMPLOYEE_COUNTS = Array.from({ length: 20 }, (_, i) => i + 1);
 
+function getTodayDateInputValue() {
+  const now = new Date();
+  const tzOffsetMs = now.getTimezoneOffset() * 60 * 1000;
+  return new Date(now.getTime() - tzOffsetMs).toISOString().slice(0, 10);
+}
+
 const SECTIONS = [
   { key: "home", label: "Home overview" },
   { key: "team", label: "Team members" },
@@ -584,6 +590,9 @@ export default function ManagerDashboard() {
     if (!projectForm.name.trim()) return "Project name is required.";
     if (!projectForm.department) return "Select a department for this project.";
     if (!projectForm.job_title) return "Select a job title for this project.";
+    if (projectForm.deadline && projectForm.deadline < getTodayDateInputValue()) {
+      return "Project deadline cannot be in the past.";
+    }
     const hasSkillRequirement = projectForm.requirements.some((r) => r.skill_id);
     if (!hasSkillRequirement) return "Select at least one required skill.";
     const requiredEmployees = Number(projectForm.required_employees);
@@ -1092,7 +1101,7 @@ export default function ManagerDashboard() {
                       {allJobTitles.map((jt) => <MenuItem key={jt} value={jt}>{jt}</MenuItem>)}
                     </TextField>
                   </Grid>
-                  <Grid item xs={12} md={4}><TextField size="small" fullWidth label="Deadline" type="date" InputLabelProps={{ shrink: true }} value={projectForm.deadline} onChange={(e) => setProjectForm((p) => ({ ...p, deadline: e.target.value }))} /></Grid>
+                  <Grid item xs={12} md={4}><TextField size="small" fullWidth label="Deadline" type="date" InputLabelProps={{ shrink: true }} inputProps={{ min: getTodayDateInputValue() }} value={projectForm.deadline} onChange={(e) => setProjectForm((p) => ({ ...p, deadline: e.target.value }))} /></Grid>
                   <Grid item xs={12}><TextField size="small" fullWidth label="Description" value={projectForm.description} onChange={(e) => setProjectForm((p) => ({ ...p, description: e.target.value }))} /></Grid>
                   <Grid item xs={12} md={4}>
                     <TextField select size="small" fullWidth label="Required skill" value={projectForm.requirements[0].skill_id} onChange={(e) => setProjectForm((p) => ({ ...p, requirements: [{ ...p.requirements[0], skill_id: e.target.value }] }))}>
@@ -1588,4 +1597,3 @@ export default function ManagerDashboard() {
     </AppShell>
   );
 }
-
