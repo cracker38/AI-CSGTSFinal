@@ -1,5 +1,6 @@
 import jsPDF from "jspdf";
 import { drawBrandLogoPdf } from "./brandLogoPdf.js";
+import { formatFrw } from "./currency.js";
 
 function isMainReport(reportType) {
   return (reportType || "main") === "main";
@@ -463,8 +464,8 @@ function buildHrTrainingActiveReport(r, data) {
     { title: "Employees in training", body: fmt(employeeIds.size) },
     { title: "Org completion rate", body: fmtPct(trainingPlan.training_completion_rate_pct) },
     {
-      title: "Budget committed",
-      body: trainingPlan.budget?.committed_spend != null ? `$${trainingPlan.budget.committed_spend}` : "—"
+      title: "Budget committed (FRW)",
+      body: trainingPlan.budget?.committed_spend != null ? formatFrw(trainingPlan.budget.committed_spend) : "—"
     }
   ]);
 

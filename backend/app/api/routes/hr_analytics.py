@@ -10,6 +10,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.api.deps import require_roles
+from app.core.currency import CURRENCY_CODE
 from app.db.session import get_db
 from app.models.cv_document import CvDocument
 from app.models.employee_profile import EmployeeProfile
@@ -334,7 +335,12 @@ def hr_training_planning(
     employees, current_map, required_map = _load_employee_skill_maps(db)
     if not employees:
         return {
-            "budget": {"committed_spend": 0, "recommended_investment": 0, "uncommitted_recommendation": 0},
+            "budget": {
+                "currency": CURRENCY_CODE,
+                "committed_spend": 0,
+                "recommended_investment": 0,
+                "uncommitted_recommendation": 0,
+            },
             "programs": [],
             "training_completion_rate_pct": 0.0,
             "assignment_stats": {"total": 0, "active": 0, "completed": 0},

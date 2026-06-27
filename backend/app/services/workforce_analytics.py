@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.ai.gap import compute_skill_gaps
 from app.ai.sklearn_signals import blended_alignment_pct, cv_role_semantic_similarity
 from app.models.employee_profile import EmployeeProfile
-from app.models.hr_action import HrAction
+from app.core.currency import CURRENCY_CODE
 from app.models.manager_project import EmployeeProjectDailyReport, ManagerProject, ProjectAssignment, ProjectStatus
 from app.models.master_data import JobTitleCatalog
 from app.models.skill import Skill
@@ -159,6 +159,7 @@ def build_performance_support_row(
 
 
 def estimate_program_cost(skill: str, gap_total: int, employees_needing: int) -> int:
+    """Estimated program cost in FRW (Rwanda Franc)."""
     catalog = courses_for_skill(normalize_skill_name(skill))
     if catalog:
         weeks = catalog[0].duration_weeks
@@ -296,7 +297,7 @@ def suggest_job_title_for_skill(db: Session, skill: str) -> str | None:
 
 
 def _committed_training_spend(db: Session) -> int:
-    """Sum estimated_cost stored on real hr_actions training_assign rows."""
+    """Sum estimated_cost (FRW) stored on real hr_actions training_assign rows."""
     rows = db.query(HrAction).filter(HrAction.action_type == "training_assign").all()
     total = 0.0
     for row in rows:
@@ -391,6 +392,7 @@ def build_hr_training_planning(db: Session, employees: list[User], current_map: 
 
     return {
         "budget": {
+            "currency": CURRENCY_CODE,
             "committed_spend": committed,
             "recommended_investment": int(recommended_total),
             "uncommitted_recommendation": int(max(0, recommended_total - committed)),

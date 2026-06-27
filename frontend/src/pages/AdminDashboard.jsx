@@ -37,6 +37,8 @@ import {
 } from "@mui/material";
 import RefreshIcon from "@mui/icons-material/Refresh";
 import MoreVertIcon from "@mui/icons-material/MoreVert";
+import ArchiveOutlinedIcon from "@mui/icons-material/ArchiveOutlined";
+import UnarchiveOutlinedIcon from "@mui/icons-material/UnarchiveOutlined";
 import { useSearchParams } from "react-router-dom";
 import AppShell from "../components/AppShell";
 import { api } from "../api/client";
@@ -48,6 +50,21 @@ const PROTECTED_ADMIN_ROLES = new Set(["system_admin", "hr_admin"]);
 
 function isProtectedAdmin(user) {
   return Boolean(user && PROTECTED_ADMIN_ROLES.has(user.role));
+}
+
+function formatUserStatus(status) {
+  if (status === "pending_approval") return "Pending approval";
+  if (status === "archived") return "Archived";
+  if (!status) return "—";
+  return status.charAt(0).toUpperCase() + status.slice(1);
+}
+
+function userStatusChipColor(status) {
+  if (status === "active") return "success";
+  if (status === "disabled") return "warning";
+  if (status === "archived") return "default";
+  if (status === "pending_approval") return "info";
+  return "default";
 }
 
 const SECTIONS = [
@@ -117,8 +134,9 @@ export default function AdminDashboard() {
 
   const kpis = useMemo(
     () => [
-      { label: "Total users", value: allUsers.length },
+      { label: "Total users", value: allUsers.filter((u) => u.status !== "archived").length },
       { label: "Active users", value: allUsers.filter((u) => u.status === "active").length },
+      { label: "Archived accounts", value: allUsers.filter((u) => u.status === "archived").length },
       { label: "Pending approvals", value: pending.length },
       { label: "Audit events", value: auditLogs.length }
     ],
@@ -127,6 +145,7 @@ export default function AdminDashboard() {
 
   const sortedUsers = useMemo(() => {
     const filtered = allUsers.filter((u) => {
+      if (u.status === "archived") return false;
       const matchesRole = roleFilter === "all" || u.role === roleFilter;
       const matchesStatus = statusFilter === "all" || u.status === statusFilter;
       return matchesRole && matchesStatus;
@@ -145,6 +164,14 @@ export default function AdminDashboard() {
   }, [allUsers, roleFilter, statusFilter, sortBy, sortOrder]);
 
   const filteredUsers = sortedUsers;
+
+  const archivedUsers = useMemo(
+    () =>
+      [...allUsers]
+        .filter((u) => u.status === "archived")
+        .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()),
+    [allUsers]
+  );
 
   const pagedUsers = useMemo(() => {
     const start = page * rowsPerPage;
@@ -170,7 +197,7 @@ export default function AdminDashboard() {
       setError("");
       const pRes = await api.get("/admin/users/pending");
       setPending(pRes.data);
-      const uRes = await api.get("/admin/users");
+      const uRes = await api.get("/admin/users", { params: { include_archived: true } });
       setAllUsers(uRes.data);
       const aRes = await api.get("/admin/system/audit-logs?limit=50");
       setAuditLogs(aRes.data);
@@ -247,6 +274,7 @@ export default function AdminDashboard() {
     try {
       const uRes = await api.get("/admin/users", {
         params: {
+          include_archived: true,
           q: userSearch || undefined,
           role: roleFilter !== "all" ? roleFilter : undefined,
           status: statusFilter !== "all" ? statusFilter : undefined
@@ -262,17 +290,32 @@ export default function AdminDashboard() {
 
   async function setUserStatus(userId, status) {
     const user = allUsers.find((u) => u.id === userId);
-    if (status === "disabled" && isProtectedAdmin(user)) {
-      setError("Administrator accounts cannot be disabled.");
+    if ((status === "disabled" || status === "archived") && isProtectedAdmin(user)) {
+      setError("Administrator accounts cannot be disabled or archived.");
       return;
     }
     setError("");
     try {
       await api.patch(`/admin/users/${userId}/status`, { status });
-      setSuccess(`User status updated to ${status}.`);
+      setSuccess(
+        status === "archived"
+          ? `Account archived. ${user?.email || "User"} is listed under Archived accounts.`
+          : `User status updated to ${formatUserStatus(status)}.`
+      );
       await refreshUsers();
     } catch (err) {
       setError(getApiErrorMessage(err, "Failed to update user status"));
+    }
+  }
+
+  async function restoreArchivedUser(userId) {
+    setError("");
+    try {
+      await api.post(`/admin/users/${userId}/restore`);
+      setSuccess("Account restored to active status.");
+      await refreshUsers();
+    } catch (err) {
+      setError(getApiErrorMessage(err, "Failed to restore account"));
     }
   }
 
@@ -302,19 +345,26 @@ export default function AdminDashboard() {
     setError("");
     const eligibleIds = selectedUserIds.filter((id) => {
       const user = allUsers.find((u) => u.id === id);
-      return user && !isProtectedAdmin(user);
+      if (!user || isProtectedAdmin(user)) return false;
+      if (status === "archived") return user.status !== "archived";
+      return true;
     });
     if (eligibleIds.length === 0) {
-      setError("Administrator accounts (system admin, HR admin) cannot be disabled.");
+      setError(
+        status === "archived"
+          ? "No eligible accounts to archive. Protected administrators cannot be archived."
+          : "No eligible accounts selected. Protected administrators cannot be updated."
+      );
       return;
     }
     try {
       await Promise.all(eligibleIds.map((id) => api.patch(`/admin/users/${id}/status`, { status })));
       const skipped = selectedUserIds.length - eligibleIds.length;
+      const actionLabel = status === "archived" ? "archived" : formatUserStatus(status).toLowerCase();
       setSuccess(
         skipped > 0
-          ? `Updated ${eligibleIds.length} users to ${status}. Skipped ${skipped} protected admin account(s).`
-          : `Updated ${eligibleIds.length} users to ${status}.`
+          ? `${eligibleIds.length} account(s) ${actionLabel}. Skipped ${skipped} protected or ineligible account(s).`
+          : `${eligibleIds.length} account(s) ${actionLabel}.`
       );
       await refreshUsers();
     } catch (err) {
@@ -427,19 +477,19 @@ export default function AdminDashboard() {
     }
   }
 
-  async function deleteAdminUser(user) {
+  async function archiveAdminUser(user) {
     if (isProtectedAdmin(user)) {
-      setError("Administrator accounts cannot be deleted.");
+      setError("Administrator accounts cannot be archived.");
       return;
     }
     setError("");
     try {
-      await api.delete(`/admin/users/${user.id}`);
-      setSuccess(`Deleted ${user.email}.`);
+      await api.patch(`/admin/users/${user.id}/status`, { status: "archived" });
+      setSuccess(`${user.email} moved to Archived accounts. Records are retained for audit.`);
       closeRowMenu();
       await load({ silent: true });
     } catch (err) {
-      setError(getApiErrorMessage(err, "Failed to delete user"));
+      setError(getApiErrorMessage(err, "Failed to archive account"));
     }
   }
 
@@ -614,7 +664,7 @@ export default function AdminDashboard() {
                     Create privileged accounts
                   </Typography>
                   <Typography variant="body2" color="text.secondary">
-                    You can create only `HR Admin`, `Manager`, and `Executive` accounts.
+                    Create HR Admin or Manager accounts. Employee accounts are created through self-registration.
                   </Typography>
                   <Divider sx={{ my: 2 }} />
                   <Stack component="form" spacing={2} onSubmit={createPrivileged} autoComplete="off">
@@ -663,7 +713,6 @@ export default function AdminDashboard() {
                         >
                           <MenuItem value="hr_admin">HR Admin</MenuItem>
                           <MenuItem value="manager">Manager</MenuItem>
-                          <MenuItem value="executive">Executive</MenuItem>
                         </TextField>
                       </Grid>
                     </Grid>
@@ -759,7 +808,7 @@ export default function AdminDashboard() {
                         User Directory
                       </Typography>
                       <Typography variant="body2" color="text.secondary">
-                        Manage account status, password policy, and administrative actions.
+                        Active directory — manage account status, password policy, and administrative actions. Archived accounts are managed separately below.
                       </Typography>
                     </Box>
                     <Chip label={`${filteredUsers.length} users`} color="primary" variant="outlined" />
@@ -851,6 +900,23 @@ export default function AdminDashboard() {
                     </Button>
                     <Button
                       size="small"
+                      variant="outlined"
+                      color="inherit"
+                      disabled={!selectedUserIds.length}
+                      fullWidth={isMobile}
+                      startIcon={<ArchiveOutlinedIcon fontSize="small" />}
+                      onClick={() =>
+                        setConfirmAction({
+                          title: "Archive selected accounts?",
+                          description: `${selectedUserIds.length} selected account(s) will be moved to the Archived accounts section. Access is revoked but records are retained for audit.`,
+                          onConfirm: () => bulkSetStatus("archived")
+                        })
+                      }
+                    >
+                      Archive selected
+                    </Button>
+                    <Button
+                      size="small"
                       variant="contained"
                       color="warning"
                       disabled={!selectedUserIds.length}
@@ -885,7 +951,7 @@ export default function AdminDashboard() {
                               <Typography variant="body2" color="text.secondary">{u.email}</Typography>
                               <Stack direction="row" flexWrap="wrap" gap={0.8}>
                                 <Chip size="small" label={u.role} />
-                                <Chip size="small" label={u.status} color={u.status === "active" ? "success" : u.status === "disabled" ? "warning" : "default"} />
+                                <Chip size="small" label={formatUserStatus(u.status)} color={userStatusChipColor(u.status)} variant={u.status === "archived" ? "outlined" : "filled"} />
                                 {isProtectedAdmin(u) ? <Chip size="small" color="info" variant="outlined" label="Protected admin" /> : null}
                                 <Chip size="small" variant="outlined" label={u.must_change_password ? "Force password change" : "Standard password"} />
                               </Stack>
@@ -939,17 +1005,18 @@ export default function AdminDashboard() {
                                   <Button
                                     size="small"
                                     variant="outlined"
-                                    color="error"
+                                    color="inherit"
                                     fullWidth
+                                    startIcon={<ArchiveOutlinedIcon fontSize="small" />}
                                     onClick={() =>
                                       setConfirmAction({
-                                        title: "Permanently delete user?",
-                                        description: `Delete ${u.full_name} (${u.email}). This cannot be undone.`,
-                                        onConfirm: () => deleteAdminUser(u)
+                                        title: "Archive this account?",
+                                        description: `${u.full_name} (${u.email}) will be moved to Archived accounts. Access is revoked but records are retained.`,
+                                        onConfirm: () => archiveAdminUser(u)
                                       })
                                     }
                                   >
-                                    Delete user
+                                    Archive account
                                   </Button>
                                 ) : null}
                               </Stack>
@@ -1036,8 +1103,9 @@ export default function AdminDashboard() {
                               <TableCell>
                                 <Chip
                                   size="small"
-                                  label={u.status}
-                                  color={u.status === "active" ? "success" : u.status === "disabled" ? "warning" : "default"}
+                                  label={formatUserStatus(u.status)}
+                                  color={userStatusChipColor(u.status)}
+                                  variant={u.status === "archived" ? "outlined" : "filled"}
                                 />
                               </TableCell>
                               <TableCell>{u.must_change_password ? "Force change on next login" : "Standard"}</TableCell>
@@ -1099,6 +1167,112 @@ export default function AdminDashboard() {
                       Export CSV
                     </Button>
                   </Stack>
+                </SectionPanel>
+
+                <SectionPanel>
+                  <Stack direction={{ xs: "column", sm: "row" }} justifyContent="space-between" spacing={1} alignItems={{ sm: "center" }}>
+                    <Stack direction="row" spacing={1.2} alignItems="center">
+                      <ArchiveOutlinedIcon color="action" />
+                      <Box>
+                        <Typography variant="h6" fontWeight={800}>
+                          Archived accounts
+                        </Typography>
+                        <Typography variant="body2" color="text.secondary">
+                          Deactivated accounts retained for audit and compliance. Restore an account to return platform access.
+                        </Typography>
+                      </Box>
+                    </Stack>
+                    <Chip
+                      label={`${archivedUsers.length} archived`}
+                      color={archivedUsers.length ? "default" : "success"}
+                      variant="outlined"
+                      sx={{ alignSelf: { xs: "flex-start", sm: "center" } }}
+                    />
+                  </Stack>
+                  <Divider sx={{ my: 2 }} />
+                  {archivedUsers.length === 0 ? (
+                    <Alert severity="success" icon={<ArchiveOutlinedIcon fontSize="inherit" />}>
+                      No archived accounts. When you archive a user from the directory, they will appear here.
+                    </Alert>
+                  ) : isMobile ? (
+                    <Stack spacing={1.2}>
+                      {archivedUsers.map((u) => (
+                        <Card key={u.id} variant="outlined" sx={{ borderRadius: 2.2, borderColor: "divider", bgcolor: "action.hover" }}>
+                          <CardContent sx={{ "&:last-child": { pb: 2 } }}>
+                            <Stack spacing={1}>
+                              <Typography fontWeight={700}>{u.full_name}</Typography>
+                              <Typography variant="body2" color="text.secondary">{u.email}</Typography>
+                              <Stack direction="row" flexWrap="wrap" gap={0.8}>
+                                <Chip size="small" label={u.role} />
+                                <Chip size="small" label="Archived" variant="outlined" />
+                              </Stack>
+                              <Typography variant="caption" color="text.secondary">
+                                Originally created {new Date(u.created_at).toLocaleDateString()}
+                              </Typography>
+                              <Button
+                                size="small"
+                                variant="contained"
+                                startIcon={<UnarchiveOutlinedIcon fontSize="small" />}
+                                onClick={() =>
+                                  setConfirmAction({
+                                    title: "Restore archived account?",
+                                    description: `Restore ${u.full_name} (${u.email}) to active status.`,
+                                    onConfirm: () => restoreArchivedUser(u.id)
+                                  })
+                                }
+                              >
+                                Restore account
+                              </Button>
+                            </Stack>
+                          </CardContent>
+                        </Card>
+                      ))}
+                    </Stack>
+                  ) : (
+                    <TableContainer sx={{ borderRadius: 2, border: "1px solid", borderColor: "divider" }}>
+                      <Table size="small">
+                        <TableHead>
+                          <TableRow>
+                            <TableCell>Name</TableCell>
+                            <TableCell>Email</TableCell>
+                            <TableCell>Role</TableCell>
+                            <TableCell>Department</TableCell>
+                            <TableCell>Created</TableCell>
+                            <TableCell align="right">Action</TableCell>
+                          </TableRow>
+                        </TableHead>
+                        <TableBody>
+                          {archivedUsers.map((u) => (
+                            <TableRow key={u.id} hover>
+                              <TableCell>{u.full_name}</TableCell>
+                              <TableCell>{u.email}</TableCell>
+                              <TableCell>
+                                <Chip size="small" label={u.role} />
+                              </TableCell>
+                              <TableCell>{u.department}</TableCell>
+                              <TableCell>{new Date(u.created_at).toLocaleDateString()}</TableCell>
+                              <TableCell align="right">
+                                <Button
+                                  size="small"
+                                  variant="outlined"
+                                  startIcon={<UnarchiveOutlinedIcon fontSize="small" />}
+                                  onClick={() =>
+                                    setConfirmAction({
+                                      title: "Restore archived account?",
+                                      description: `Restore ${u.full_name} (${u.email}) to active status.`,
+                                      onConfirm: () => restoreArchivedUser(u.id)
+                                    })
+                                  }
+                                >
+                                  Restore
+                                </Button>
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </TableContainer>
+                  )}
                 </SectionPanel>
 
               </Stack>
@@ -1411,7 +1585,6 @@ export default function AdminDashboard() {
                   <MenuItem value="employee">Employee</MenuItem>
                   <MenuItem value="manager">Manager</MenuItem>
                   <MenuItem value="hr_admin">HR Admin</MenuItem>
-                  <MenuItem value="executive">Executive</MenuItem>
                 </TextField>
                 {!isProtectedAdmin(editUser) ? (
                   <TextField
@@ -1496,20 +1669,21 @@ export default function AdminDashboard() {
           Edit user
         </MenuItem>
         <MenuItem
-          sx={{ color: "error.main" }}
+          sx={{ color: "text.secondary" }}
           onClick={() => {
             const user = rowMenuUser;
             closeRowMenu();
-            if (!user || isProtectedAdmin(user)) return;
+            if (!user || isProtectedAdmin(user) || user.status === "archived") return;
             setConfirmAction({
-              title: "Permanently delete user?",
-              description: `Delete ${user.full_name} (${user.email}). This cannot be undone.`,
-              onConfirm: () => deleteAdminUser(user)
+              title: "Archive this account?",
+              description: `${user.full_name} (${user.email}) will be moved to Archived accounts. Access is revoked but records are retained.`,
+              onConfirm: () => archiveAdminUser(user)
             });
           }}
-          disabled={isProtectedAdmin(rowMenuUser)}
+          disabled={isProtectedAdmin(rowMenuUser) || rowMenuUser?.status === "archived"}
         >
-          Delete user
+          <ArchiveOutlinedIcon fontSize="small" sx={{ mr: 1 }} />
+          Archive account
         </MenuItem>
         {rowMenuUser?.status !== "active" ? (
           <MenuItem

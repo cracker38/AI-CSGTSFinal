@@ -21,6 +21,7 @@ class AccountStatus(str, enum.Enum):
     pending_approval = "pending_approval"
     active = "active"
     disabled = "disabled"
+    archived = "archived"
 
 
 class User(Base, UuidPrimaryKeyMixin, TimestampedMixin):

@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.router import api_router
 from app.core.config import settings
 from app.db.init_db import (
+    ensure_archived_account_status,
     ensure_default_system_admin,
     ensure_master_catalogs,
     ensure_project_department_schema,
@@ -66,6 +67,7 @@ def create_app() -> FastAPI:
         try:
             ensure_team_assignment_schema(db)
             ensure_project_department_schema(db)
+            ensure_archived_account_status(db)
             ensure_default_system_admin(db)
             ensure_master_catalogs(db)
         finally:

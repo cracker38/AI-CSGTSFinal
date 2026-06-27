@@ -44,6 +44,7 @@ import { getChartTheme } from "../utils/chartTheme";
 import { exportRowsToCsv } from "../utils/csvExport";
 import { useThemeMode } from "../theme/ThemeModeContext";
 import { getApiErrorMessage } from "../utils/apiError";
+import { formatFrw } from "../utils/currency";
 
 const SECTIONS = [
   { key: "home", label: "HR overview" },
@@ -79,8 +80,8 @@ function TrainingProgramCard({ program, onAssign }) {
         <Grid container spacing={1}>
           <Grid item xs={6}><Typography variant="caption" color="text.secondary">Employees needing</Typography><Typography variant="body2" fontWeight={700}>{program.employees_needing}</Typography></Grid>
           <Grid item xs={6}><Typography variant="caption" color="text.secondary">Org gap</Typography><Typography variant="body2" fontWeight={700}>{program.org_gap_units}</Typography></Grid>
-          <Grid item xs={6}><Typography variant="caption" color="text.secondary">Suggested</Typography><Typography variant="body2" fontWeight={700}>${Number(program.suggested_investment || 0).toLocaleString()}</Typography></Grid>
-          <Grid item xs={6}><Typography variant="caption" color="text.secondary">Committed</Typography><Typography variant="body2" fontWeight={700}>${Number(program.committed_spend || 0).toLocaleString()}</Typography></Grid>
+          <Grid item xs={6}><Typography variant="caption" color="text.secondary">Suggested</Typography><Typography variant="body2" fontWeight={700}>{formatFrw(program.suggested_investment)}</Typography></Grid>
+          <Grid item xs={6}><Typography variant="caption" color="text.secondary">Committed</Typography><Typography variant="body2" fontWeight={700}>{formatFrw(program.committed_spend)}</Typography></Grid>
         </Grid>
       </Stack>
       <Button size="small" variant="outlined" fullWidth sx={{ mt: 1.5 }} onClick={onAssign}>
@@ -1338,7 +1339,7 @@ export default function HrDashboard() {
                     Training planning & budget tracking
                   </Typography>
                   <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-                    Committed spend is summed from real HR training assignments in the database. Recommended investment is
+                    Committed spend is summed from real HR training assignments in the database (amounts in FRW). Recommended investment is
                     calculated from organization skill gaps and official vendor course durations — not fixed demo budgets.
                   </Typography>
                   {refreshing ? <LinearProgress sx={{ mt: 1.5 }} /> : null}
@@ -1354,17 +1355,17 @@ export default function HrDashboard() {
                   <Grid container spacing={2} sx={{ mb: 1 }}>
                     <Grid item xs={12} md={4}>
                       <Alert severity="success">
-                        Committed spend (DB): ${Number(trainingBudget.committed_spend || 0).toLocaleString()}
+                        Committed spend (DB): {formatFrw(trainingBudget.committed_spend)}
                       </Alert>
                     </Grid>
                     <Grid item xs={12} md={4}>
                       <Alert severity="info">
-                        Recommended plan: ${Number(trainingBudget.recommended_investment || 0).toLocaleString()}
+                        Recommended plan: {formatFrw(trainingBudget.recommended_investment)}
                       </Alert>
                     </Grid>
                     <Grid item xs={12} md={4}>
                       <Alert severity="warning">
-                        Not yet committed: ${Number(trainingBudget.uncommitted_recommendation || 0).toLocaleString()}
+                        Not yet committed: {formatFrw(trainingBudget.uncommitted_recommendation)}
                       </Alert>
                     </Grid>
                   </Grid>
@@ -1415,8 +1416,8 @@ export default function HrDashboard() {
                             <TableCell sx={{ minWidth: 100 }}>Skill</TableCell>
                             <TableCell align="right">Employees needing</TableCell>
                             <TableCell align="right">Org gap</TableCell>
-                            <TableCell align="right">Suggested investment</TableCell>
-                            <TableCell align="right">Committed (DB)</TableCell>
+                            <TableCell align="right">Suggested investment (FRW)</TableCell>
+                            <TableCell align="right">Committed (FRW)</TableCell>
                             <TableCell align="right" sx={{ minWidth: 120 }}>Assign</TableCell>
                           </TableRow>
                         </TableHead>
@@ -1443,9 +1444,9 @@ export default function HrDashboard() {
                               <TableCell>{p.target_skill}</TableCell>
                               <TableCell align="right">{p.employees_needing}</TableCell>
                               <TableCell align="right">{p.org_gap_units}</TableCell>
-                              <TableCell align="right">${Number(p.suggested_investment || 0).toLocaleString()}</TableCell>
+                              <TableCell align="right">{formatFrw(p.suggested_investment)}</TableCell>
                               <TableCell align="right">
-                                ${Number(p.committed_spend || 0).toLocaleString()}
+                                {formatFrw(p.committed_spend)}
                                 {p.active_assignments > 0 ? ` (${p.active_assignments})` : ""}
                               </TableCell>
                               <TableCell align="right">

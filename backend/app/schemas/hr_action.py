@@ -38,7 +38,7 @@ class TrainingAssignRequest(BaseModel):
     user_id: uuid.UUID
     program_name: str = Field(..., min_length=1, max_length=300)
     target_skill: str = Field(..., min_length=1, max_length=200)
-    estimated_cost: int | None = Field(default=None, ge=0)
+    estimated_cost: int | None = Field(default=None, ge=0, description="Training cost in FRW (Rwanda Franc)")
     note: str | None = Field(default=None, max_length=2000)
     official_url: str | None = Field(default=None, max_length=2000)
     provider: str | None = Field(default=None, max_length=200)

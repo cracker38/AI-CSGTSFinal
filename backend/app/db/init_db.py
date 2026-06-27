@@ -118,6 +118,16 @@ def ensure_project_department_schema(db: Session) -> None:
     db.commit()
 
 
+def ensure_archived_account_status(db: Session) -> None:
+    """Add `archived` to account_status enum when missing (PostgreSQL)."""
+    bind = db.get_bind()
+    if bind.dialect.name != "postgresql":
+        return
+    with bind.connect() as conn:
+        conn.execute(text("ALTER TYPE account_status ADD VALUE IF NOT EXISTS 'archived'"))
+        conn.commit()
+
+
 def ensure_team_assignment_schema(db: Session) -> None:
     """
     Dev-friendly schema patching.

@@ -14,7 +14,8 @@ from app.models.hr_action import HrAction
 from app.models.user import AccountStatus, User, UserRole
 from app.schemas.user import UserPublic
 from app.services.audit import write_audit_log
-from app.services.user_delete import delete_user_for_admin, is_protected_admin
+from app.services.user_archive import archive_user_for_admin, restore_user_for_admin
+from app.services.user_delete import is_protected_admin
 from app.services.users import approve_user
 
 
@@ -26,11 +27,11 @@ class CreatePrivilegedUserRequest(BaseModel):
     full_name: str = Field(min_length=2, max_length=200)
     email: EmailStr
     temporary_password: str = Field(min_length=8, max_length=200)
-    role: str = Field(pattern="^(hr_admin|manager|executive)$")
+    role: str = Field(pattern="^(hr_admin|manager)$")
 
 
 class UpdateUserStatusRequest(BaseModel):
-    status: str = Field(pattern="^(active|disabled)$")
+    status: str = Field(pattern="^(active|disabled|archived)$")
 
 
 class AssignManagerRequest(BaseModel):
@@ -48,8 +49,8 @@ class AdminUpdateUserRequest(BaseModel):
     job_title: str | None = Field(None, min_length=1, max_length=120)
     experience_level: str | None = Field(None, min_length=1, max_length=20)
     primary_skill: str | None = Field(None, min_length=1, max_length=120)
-    role: str | None = Field(None, pattern="^(employee|manager|hr_admin|executive)$")
-    status: str | None = Field(None, pattern="^(active|disabled|pending_approval)$")
+    role: str | None = Field(None, pattern="^(employee|manager|hr_admin)$")
+    status: str | None = Field(None, pattern="^(active|disabled|pending_approval|archived)$")
     manager_id: uuid.UUID | None = None
 
 
@@ -79,6 +80,7 @@ def list_users(
     q: str | None = Query(default=None),
     role: str | None = Query(default=None),
     status_filter: str | None = Query(default=None, alias="status"),
+    include_archived: bool = Query(default=False),
 ) -> list[UserPublic]:
     query = db.query(User)
     if q:
@@ -88,6 +90,8 @@ def list_users(
         query = query.filter(User.role == UserRole(role))
     if status_filter:
         query = query.filter(User.status == AccountStatus(status_filter))
+    elif not include_archived:
+        query = query.filter(User.status != AccountStatus.archived)
     users = query.order_by(User.created_at.desc()).all()
     return [_to_user_public(u) for u in users]
 
@@ -111,6 +115,8 @@ def list_user_records(
         query = query.filter(User.role == UserRole(role))
     if status_filter:
         query = query.filter(User.status == AccountStatus(status_filter))
+    else:
+        query = query.filter(User.status != AccountStatus.archived)
     users = query.order_by(User.created_at.desc()).all()
     return [_to_user_public(u) for u in users]
 
@@ -297,9 +303,17 @@ def update_user_status(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
     if is_protected_admin(user):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot change administrator account status")
-    user.status = AccountStatus(payload.status)
-    db.commit()
-    db.refresh(user)
+    if payload.status == AccountStatus.archived.value and admin.id == user_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot archive your own account")
+    if payload.status == AccountStatus.archived.value:
+        try:
+            user = archive_user_for_admin(db, admin_id=admin.id, user_id=user_id)
+        except ValueError as e:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
+    else:
+        user.status = AccountStatus(payload.status)
+        db.commit()
+        db.refresh(user)
 
     write_audit_log(
         db,
@@ -422,19 +436,15 @@ def admin_update_user(
     return _to_user_public(user)
 
 
-@router.delete("/{user_id}")
-def admin_delete_user(
+@router.post("/{user_id}/restore", response_model=UserPublic)
+def restore_archived_user(
     user_id: uuid.UUID,
     request: Request,
     db: Session = Depends(get_db),
     admin: User = Depends(require_roles(UserRole.system_admin)),
-) -> dict[str, Any]:
-    target = db.query(User).filter(User.id == user_id).one_or_none()
-    if not target:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-    meta = {"email": target.email, "role": target.role.value}
+) -> UserPublic:
     try:
-        delete_user_for_admin(db, admin_id=admin.id, user_id=user_id)
+        user = restore_user_for_admin(db, user_id=user_id)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
 
@@ -442,12 +452,41 @@ def admin_delete_user(
         db,
         request=request,
         actor_user_id=admin.id,
-        action="user.admin_delete",
+        action="user.restore",
+        entity_type="user",
+        entity_id=str(user.id),
+        meta={"status": user.status.value},
+    )
+    return _to_user_public(user)
+
+
+@router.delete("/{user_id}")
+def admin_delete_user(
+    user_id: uuid.UUID,
+    request: Request,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_roles(UserRole.system_admin)),
+) -> dict[str, Any]:
+    """Soft-delete: archives the account instead of removing database records."""
+    target = db.query(User).filter(User.id == user_id).one_or_none()
+    if not target:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    meta = {"email": target.email, "role": target.role.value}
+    try:
+        archive_user_for_admin(db, admin_id=admin.id, user_id=user_id)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
+
+    write_audit_log(
+        db,
+        request=request,
+        actor_user_id=admin.id,
+        action="user.archive",
         entity_type="user",
         entity_id=str(user_id),
         meta=meta,
     )
-    return {"ok": True}
+    return {"ok": True, "archived": True}
 
 
 @router.post("/{user_id}/reset-password-default", response_model=UserPublic)
